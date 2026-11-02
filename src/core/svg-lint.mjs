@@ -1,0 +1,554 @@
+// The picture safety and draw-cost lint: generic, and the same for every church. A picture is checked by
+// reading it, not by searching it for bad words: a small tolerant reader walks the text tag by tag and
+// everything it does not recognise is a problem (fail closed). It also bounds the COST of drawing a picture
+// (not only its size), because a visitor's browser draws every church's art: see the long comment above
+// drawCost below for the weighting rules. Carried over unchanged from the kington-parishes Advent module
+// (modules/advent/build.mjs), where it was reviewed and attack-tested; see test/unit/svg-attacks.test.mjs.
+import { resolve, sep } from 'node:path';
+import { artPathIsSafe } from './day.mjs';
+
+const MAX_SVG_BYTES = 40 * 1024;
+const SVG_ELEMENTS = new Set([
+  'svg', 'g', 'defs', 'path', 'circle', 'ellipse', 'rect', 'line', 'polyline', 'polygon',
+  'linearGradient', 'radialGradient', 'stop', 'clipPath', 'mask', 'use', 'title', 'desc', 'symbol',
+]);
+const SVG_ATTRIBUTES = new Set([
+  'id', 'd', 'x', 'y', 'cx', 'cy', 'r', 'rx', 'ry', 'x1', 'y1', 'x2', 'y2', 'fx', 'fy', 'width', 'height', 'points',
+  'viewBox', 'preserveAspectRatio', 'transform', 'fill', 'fill-opacity', 'fill-rule', 'clip-rule', 'stroke',
+  'stroke-width', 'stroke-linecap', 'stroke-linejoin', 'stroke-miterlimit',
+  'stroke-opacity', 'opacity', 'offset', 'stop-color', 'stop-opacity', 'gradientUnits', 'gradientTransform',
+  'spreadMethod', 'clipPathUnits', 'maskUnits', 'maskContentUnits', 'clip-path', 'mask', 'color', 'role', 'aria-label',
+  'aria-hidden', 'focusable', 'style', 'href', 'xmlns',
+]);
+const SVG_NAMESPACE = 'http://www.w3.org/2000/svg';
+const STYLE_PROPERTIES = new Set(['fill', 'stroke', 'stroke-width', 'opacity', 'stop-color', 'stop-opacity', 'color']);
+const STYLE_VALUE = /^(?:#[0-9a-fA-F]{3,8}|[a-zA-Z]+|-?(?:\d+\.?\d*|\.\d+)(?:px|%)?)$/;
+const PLAIN_VALUE = /^[A-Za-z0-9 #.,%()+\-_]*$/;
+const ARIA_TEXT = /^[A-Za-z0-9 .,;:'!?\-]*$/;
+const PLAIN_TEXT = /^[A-Za-z0-9 .,;:'!?\-\s]*$/;
+const COMMENT_TEXT = /^[A-Za-z0-9 .,'\-]*$/;
+const ID_PATTERN = /^[A-Za-z][A-Za-z0-9_-]*$/;
+const MAX_DEPTH = 20;
+const MAX_ELEMENTS = 2000;
+const MAX_USES = 50;
+
+// ---- geometry complexity ----
+// A path is as costly as the number of segments it has, not "one draw": 4,300 arcs used 50 times took a browser 12.8
+// seconds. So a path weighs 1 + floor(segments / 10), a polygon or polyline 1 + floor(points / 5), and the other
+// shapes 1. A "segment" is one command's worth of coordinates (a line, a curve, an arc, a close), counting every
+// repeated implicit set of coordinates after a command letter. Caps well above real art: a file of at most 40 KB,
+// 24 KB of path data in all, one path of at most 4 KB and one points list of at most 1 KB.
+const MAX_PATH_DATA = 24 * 1024;
+const MAX_ONE_PATH = 4 * 1024;
+const MAX_POINTS_TEXT = 1024;
+const SEGMENT_ARITY = { M: 2, L: 2, T: 2, H: 1, V: 1, C: 6, S: 4, Q: 4 };
+const NUMBER_AT = /^[\s,]*(-?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?)/;
+
+/** The number of segments in path data (see above). At least 1 for any non-empty data. */
+export function pathSegments(d) {
+  let segments = 0;
+  for (const [, command, args] of d.matchAll(/([MmLlHhVvCcSsQqTtAaZz])([^MmLlHhVvCcSsQqTtAaZz]*)/g)) {
+    const upper = command.toUpperCase();
+    if (upper === 'Z') segments += 1;
+    else if (upper === 'A') segments += arcSegments(args);
+    else segments += Math.max(1, Math.floor((args.match(NUMBER) ?? []).length / SEGMENT_ARITY[upper]));
+  }
+  return Math.max(segments, d.trim() === '' ? 0 : 1);
+}
+
+function geometryWeight(record) {
+  if (record.name === 'path') return 1 + Math.floor(pathSegments(record.attrs.d ?? '') / 10);
+  if (record.name === 'polygon' || record.name === 'polyline') return 1 + Math.floor(Math.floor(((record.attrs.points ?? '').match(NUMBER) ?? []).length / 2) / 5);
+  return 1;
+}
+
+// ---- draw cost ----
+// A picture is loaded as an image by every visitor, so it must be cheap to DRAW, not only small to read. The
+// lint therefore also bounds the work a browser does:
+//   - resource references cannot nest: nothing inside a <mask> or <clipPath> (nor the mask or clipPath itself) may
+//     carry a mask or clip-path attribute or contain a <use>;
+//   - a weighted draw budget: every drawn element weighs 1; a <use> weighs the whole subtree of its target;
+//     an element with a mask, clip-path or opacity weighs 5 more, and 5 more again per mask or clip-path
+//     reference; and a <mask> or <clipPath> weighs (its subtree) x (its references), because a browser redraws it
+//     for every element that uses it. The total may not exceed MAX_DRAW_WEIGHT; there are at most 20 references
+//     and at most 50 elements inside any mask or clipPath;
+//   - there are no dashed lines (stroke-dasharray is not an allowed attribute: the dash count is the path length over
+//     the dash length, which no weight can bound), and no number in a size, position, path or transform attribute may
+//     be larger than 100000;
+//   - a gradient has at most 16 stops, and every shape that fills or strokes with one pays ceil(stops / 2) more, 8 more for a
+//     repeating or reflecting gradient and 10 more when the shape covers over 25% of the picture.
+export const MAX_DRAW_WEIGHT = 900;
+const MAX_NUMBER = 100000;
+const NOT_DRAWN_DIRECTLY = new Set(['defs', 'symbol', 'mask', 'clipPath', 'linearGradient', 'radialGradient', 'title', 'desc']);
+const RESOURCE_ELEMENTS = new Set(['mask', 'clipPath']);
+const RESOURCE_ATTRIBUTES = ['mask', 'clip-path'];
+const NOT_NUMERIC = new Set(['id', 'aria-label', 'href', 'role', 'style', 'xmlns', 'fill', 'stroke', 'stop-color', 'color', 'preserveAspectRatio', 'clip-path', 'mask', 'aria-hidden', 'focusable']);
+const NUMBER = /-?(?:\d+\.?\d*|\.\d+)(?:[eE][-+]?\d+)?/g;
+
+function hasOpacity(attrs) {
+  return 'opacity' in attrs || /(?:^|;)\s*opacity\s*:/.test(attrs.style ?? '');
+}
+
+function ownWeight(record) {
+  const references = RESOURCE_ATTRIBUTES.filter((name) => name in record.attrs).length;
+  return geometryWeight(record) + (references > 0 || hasOpacity(record.attrs) ? 5 : 0) + 5 * references;
+}
+
+function subtreeWeight(record) {
+  return ownWeight(record) + record.children.reduce((sum, child) => sum + subtreeWeight(child), 0);
+}
+
+// Returns a problem sentence (or null) and the total weight, for the elements the parser collected.
+//
+// A browser redraws the WHOLE content of a <mask> or <clipPath> for EVERY element that references it, so a mask is
+// charged (the weight of its subtree) x (the number of references to it). References are counted per DRAWN
+// instance: a <use> of a group that holds a reference counts once per use. Hard caps keep the numbers small:
+// at most MAX_RESOURCE_REFERENCES references in a picture and at most MAX_RESOURCE_CHILDREN elements inside any
+// one mask or clipPath.
+const MAX_RESOURCE_REFERENCES = 20;
+const MAX_RESOURCE_CHILDREN = 50;
+const RESOURCE_REFERENCE = /^url\(#([A-Za-z][A-Za-z0-9_-]*)\)$/;
+
+const MAX_STOPS = 16;
+const LARGE_SHARE = 0.25;
+// Hard backstops, whatever the weights say (counted per DRAWN shape, after paint is inherited from the groups around a shape
+// and through <use>, and counted per reference for shapes inside a mask or clipPath): at most MAX_GRADIENT_SHAPES shapes may
+// fill or stroke with ANY gradient, and at most MAX_LARGE_SHAPES may be "large" (covering over 25% of the picture, counting
+// stroke width, a percentage size, a scale transform or a symbol scaled up by its <use>). The real pictures use at most
+// 6 gradient shapes and 6 large ones, so both caps leave over 2.5 times that (a test measures the real maxima).
+export const MAX_GRADIENT_SHAPES = 20;
+export const MAX_LARGE_SHAPES = 15;
+const SHAPE_ELEMENTS = new Set(['path', 'circle', 'ellipse', 'rect', 'line', 'polyline', 'polygon']);
+const GEOMETRY_ATTRIBUTES = ['x', 'y', 'cx', 'cy', 'r', 'rx', 'ry', 'x1', 'y1', 'x2', 'y2', 'width', 'height'];
+const PATH_COMMANDS = /([MmLlHhVvCcSsQqTtAaZz])([^MmLlHhVvCcSsQqTtAaZz]*)/g;
+const GRADIENTS = new Set(['linearGradient', 'radialGradient']);
+
+// The size of the picture, from the root's viewBox (or width and height).
+function pictureSize(root) {
+  const box = (root?.attrs.viewBox ?? '').split(/[ ,]+/).map(Number);
+  if (box.length === 4 && box.every(Number.isFinite) && box[2] > 0 && box[3] > 0) return { area: box[2] * box[3], side: Math.min(box[2], box[3]) };
+  const [width, height] = [Number(root?.attrs.width), Number(root?.attrs.height)];
+  return width > 0 && height > 0 ? { area: width * height, side: Math.min(width, height) } : { area: 400 * 225, side: 225 };
+}
+
+const numbersIn = (text) => (text ?? '').match(NUMBER)?.map(Number) ?? [];
+
+// A paint or stroke width as the browser would see it: a style setting beats the attribute.
+function ownSetting(attrs, name) {
+  const fromStyle = new RegExp(`(?:^|;)\\s*${name}\\s*:\\s*([^;]+)`).exec(attrs.style ?? '');
+  return fromStyle ? fromStyle[1].trim() : attrs[name];
+}
+
+// How much a transform can multiply an area by (a scale or a matrix). Rotations, shifts and skews keep the area.
+function transformScale(value) {
+  let scale = 1;
+  for (const [, name, args] of (value ?? '').matchAll(/([A-Za-z]+)\s*\(([^)]*)\)/g)) {
+    const n = numbersIn(args);
+    if (name === 'scale' && n.length > 0) scale *= Math.abs(n[0] * (n[1] ?? n[0]));
+    else if (name === 'matrix' && n.length === 6) scale *= Math.abs(n[0] * n[3] - n[1] * n[2]);
+  }
+  return scale;
+}
+
+// How much a <use> of a <symbol> with a viewBox magnifies the symbol's content (counting the larger way of fitting it).
+function symbolScale(use, target, size) {
+  const box = (target?.attrs.viewBox ?? '').split(/[ ,]+/).map(Number);
+  if (target?.name !== 'symbol' || box.length !== 4 || !box.every(Number.isFinite) || box[2] <= 0 || box[3] <= 0) return 1;
+  const [width, height] = [Number(use.attrs.width), Number(use.attrs.height)];
+  const [wide, high] = width > 0 && height > 0 ? [width, height] : [Math.sqrt(size.area), Math.sqrt(size.area)];
+  return Math.max(wide / box[2], high / box[3]) ** 2;
+}
+
+// An arc's own numbers, one arc at a time (the two flags may be written without separators).
+function arcList(args) {
+  let rest = args;
+  const take = (pattern) => {
+    const match = pattern.exec(rest);
+    if (!match) return null;
+    rest = rest.slice(match[0].length);
+    return match[1] ?? match[0];
+  };
+  const arcs = [];
+  for (;;) {
+    const [rx, ry] = [take(NUMBER_AT), take(NUMBER_AT)];
+    const rotation = take(NUMBER_AT);
+    const flags = [take(/^[\s,]*[01]/), take(/^[\s,]*[01]/)];
+    const [x, y] = [take(NUMBER_AT), take(NUMBER_AT)];
+    if ([rx, ry, rotation, ...flags, x, y].some((part) => part === null)) return { arcs, leftover: args.trim() !== '' && arcs.length === 0 };
+    arcs.push({ rx: Math.abs(Number(rx)), ry: Math.abs(Number(ry)), x: Number(x), y: Number(y) });
+  }
+}
+
+function arcSegments(args) {
+  const { arcs, leftover } = arcList(args);
+  return Math.max(arcs.length, leftover ? 1 : 0);
+}
+
+// A box around a path and an over-estimate of its length, read conservatively (control points count as points, an arc is
+// allowed to bulge by twice its radius, relative commands are followed).
+function pathGeometry(d) {
+  let [x, y, startX, startY] = [0, 0, 0, 0];
+  const box = [Infinity, Infinity, -Infinity, -Infinity];
+  let length = 0;
+  const see = (px, py) => { box[0] = Math.min(box[0], px); box[1] = Math.min(box[1], py); box[2] = Math.max(box[2], px); box[3] = Math.max(box[3], py); };
+  const lineTo = (nx, ny) => { length += Math.hypot(nx - x, ny - y); see(nx, ny); [x, y] = [nx, ny]; };
+  for (const [, command, args] of d.matchAll(PATH_COMMANDS)) {
+    const upper = command.toUpperCase();
+    const relative = command !== upper;
+    const [ox, oy] = relative ? [x, y] : [0, 0];
+    const n = numbersIn(args);
+    if (upper === 'Z') lineTo(startX, startY);
+    else if (upper === 'H') for (const v of n) lineTo(ox + v, y);
+    else if (upper === 'V') for (const v of n) lineTo(x, oy + v);
+    else if (upper === 'A') {
+      for (const arc of arcList(args).arcs) {
+        const r = 2 * Math.max(arc.rx, arc.ry);
+        see(x - r, y - r);
+        see(x + r, y + r);
+        length += 2 * Math.PI * Math.max(arc.rx, arc.ry);
+        lineTo(ox + arc.x, oy + arc.y);
+      }
+    } else if (upper === 'M' || upper === 'L' || upper === 'T') {
+      for (let i = 0; i + 1 < n.length; i += 2) {
+        if (upper === 'M' && i === 0) { [x, y] = [ox + n[0], oy + n[1]]; [startX, startY] = [x, y]; see(x, y); } else lineTo(ox + n[i], oy + n[i + 1]);
+      }
+    } else if (upper === 'C' || upper === 'S' || upper === 'Q') {
+      const points = upper === 'C' ? 3 : 2;
+      for (let i = 0; i + 2 * points - 1 < n.length; i += 2 * points) {
+        for (let k = 0; k < points - 1; k += 1) { length += Math.hypot(ox + n[i + 2 * k] - x, oy + n[i + 2 * k + 1] - y); see(ox + n[i + 2 * k], oy + n[i + 2 * k + 1]); }
+        lineTo(ox + n[i + 2 * points - 2], oy + n[i + 2 * points - 1]);
+      }
+    }
+  }
+  return { box, length };
+}
+
+// The area a shape's fill covers (its box) and the length its stroke runs along, or null when its size is not a plain
+// number (a percentage), which counts as large.
+function shapeExtent(record) {
+  if (GEOMETRY_ATTRIBUTES.some((name) => (record.attrs[name] ?? '').includes('%'))) return null;
+  const n = (name) => Number(record.attrs[name] ?? 0) || 0;
+  switch (record.name) {
+    case 'rect': return { fill: n('width') * n('height'), length: 2 * (n('width') + n('height')) };
+    case 'circle': return { fill: Math.PI * n('r') ** 2, length: 2 * Math.PI * n('r') };
+    case 'ellipse': return { fill: Math.PI * n('rx') * n('ry'), length: 2 * Math.PI * Math.max(n('rx'), n('ry')) };
+    case 'line': return { fill: 0, length: Math.hypot(n('x2') - n('x1'), n('y2') - n('y1')) };
+    case 'path': {
+      const { box, length } = pathGeometry(record.attrs.d ?? '');
+      return { fill: box[2] >= box[0] ? (box[2] - box[0]) * (box[3] - box[1]) : 0, length };
+    }
+    default: { // polygon, polyline
+      const values = numbersIn(record.attrs.points);
+      const [xs, ys] = [values.filter((_, i) => i % 2 === 0), values.filter((_, i) => i % 2 === 1)];
+      if (xs.length === 0 || ys.length === 0) return { fill: 0, length: 0 };
+      let length = 0;
+      for (let i = 1; i < xs.length && i < ys.length; i += 1) length += Math.hypot(xs[i] - xs[i - 1], ys[i] - ys[i - 1]);
+      return { fill: (Math.max(...xs) - Math.min(...xs)) * (Math.max(...ys) - Math.min(...ys)), length };
+    }
+  }
+}
+
+// Whether a drawn shape covers over 25% of the picture: its fill (the box around it) plus its stroke (length x width), times
+// whatever scale transforms and symbol magnification apply, or its stroke is wider than a quarter of the shorter side.
+function isLarge(record, context, size) {
+  const extent = shapeExtent(record);
+  if (extent === null) return true;
+  const fills = context.fill !== 'none' && record.name !== 'line';
+  const strokes = context.stroke !== 'none';
+  const width = strokes ? context.strokeWidth : 0;
+  if (strokes && width * Math.sqrt(context.scale) > LARGE_SHARE * size.side) return true;
+  return ((fills ? extent.fill : 0) + (strokes ? extent.length * width : 0)) * context.scale > LARGE_SHARE * size.area;
+}
+
+// The paint, stroke width and scale a drawn element passes to everything inside it. Painting is INHERITED: a <g fill="url(#g)">
+// makes every shape inside it (and inside a <use> of it) a gradient shape.
+const ROOT_CONTEXT = { fill: 'black', stroke: 'none', strokeWidth: 1, scale: 1 };
+function inherit(record, context) {
+  const width = ownSetting(record.attrs, 'stroke-width');
+  return {
+    fill: ownSetting(record.attrs, 'fill') ?? context.fill,
+    stroke: ownSetting(record.attrs, 'stroke') ?? context.stroke,
+    strokeWidth: width === undefined ? context.strokeWidth : (numbersIn(width)[0] ?? context.strokeWidth),
+    scale: context.scale * transformScale(record.attrs.transform),
+  };
+}
+
+// What one shape pays for ONE paint that is a gradient: ceil(stops / 2); 8 more if the gradient repeats or reflects (a browser
+// works through every repeat); 10 more if the shape is large (a gradient over a large area is rasterised pixel by pixel).
+function gradientCharge(gradient, large) {
+  const spread = gradient.attrs.spreadMethod;
+  return Math.ceil(stopCount(gradient) / 2) + (spread === 'repeat' || spread === 'reflect' ? 8 : 0) + (large ? 10 : 0);
+}
+const stopCount = (record) => record.children.filter((child) => child.name === 'stop').length;
+
+function descendantCount(record) {
+  return record.children.reduce((sum, child) => sum + 1 + descendantCount(child), 0);
+}
+
+function drawCost(records) {
+  const byId = new Map();
+  for (const record of records) if (record.id && !byId.has(record.id)) byId.set(record.id, record);
+
+  for (const record of records) {
+    let inside = false;
+    for (let up = record; up; up = up.parent) if (RESOURCE_ELEMENTS.has(up.name)) inside = true;
+    if (inside && (RESOURCE_ATTRIBUTES.some((name) => name in record.attrs) || record.name === 'use')) {
+      return { problem: 'has a mask, clip-path or use inside a mask or clipPath (resource references may not nest)', weight: 0 };
+    }
+    if (GRADIENTS.has(record.name) && stopCount(record) > MAX_STOPS) {
+      return { problem: `has a gradient with more than ${MAX_STOPS} stops`, weight: 0 };
+    }
+    if (RESOURCE_ELEMENTS.has(record.name) && descendantCount(record) > MAX_RESOURCE_CHILDREN) {
+      return { problem: `has a mask or clipPath with more than ${MAX_RESOURCE_CHILDREN} elements inside (at most ${MAX_RESOURCE_CHILDREN} are allowed)`, weight: 0 };
+    }
+    if (record.name === 'svg' && record.parent) return { problem: 'has an svg inside the svg (only the outer one is allowed)', weight: 0 };
+  }
+
+  const root = records.find((record) => !record.parent);
+  const size = pictureSize(root);
+
+  // Walks the DRAWN instances below `record` (a <use> draws its target, with the use's own paint and scale), calling
+  // `visit(element, context)` for each one.
+  const drawnInstances = (record, context, visit) => {
+    if (NOT_DRAWN_DIRECTLY.has(record.name)) return;
+    const own = inherit(record, context);
+    if (record.name === 'use') {
+      const target = record.attrs.href ? byId.get(record.attrs.href.slice(1)) : null;
+      visit(record, own);
+      if (!target) return;
+      const inside = { ...own, scale: own.scale * symbolScale(record, target, size) };
+      const drawSubtree = (node, parent) => {
+        const mine = inherit(node, parent);
+        visit(node, mine);
+        node.children.filter((child) => !NOT_DRAWN_DIRECTLY.has(child.name)).forEach((child) => drawSubtree(child, mine));
+      };
+      drawSubtree(target, inside);
+      return;
+    }
+    visit(record, own);
+    record.children.forEach((child) => drawnInstances(child, own, visit));
+  };
+
+  // What an element costs to draw once: its own weight, plus what each gradient paint costs, and whether it counts
+  // towards the gradient and large-shape caps.
+  const cost = { weight: 0, gradients: 0, large: 0 };
+  const charge = (record, context, into) => {
+    into.weight += record.name === 'use' ? 1 + (record.attrs.href && byId.has(record.attrs.href.slice(1)) ? 0 : 1) : ownWeight(record);
+    if (!SHAPE_ELEMENTS.has(record.name)) return;
+    const large = isLarge(record, context, size);
+    const painted = context.fill !== 'none' || context.stroke !== 'none';
+    if (large && painted) into.large += 1;
+    let gradientShape = false;
+    for (const paint of [context.fill, context.stroke]) {
+      const reference = RESOURCE_REFERENCE.exec(paint ?? '');
+      const gradient = reference ? byId.get(reference[1]) : null;
+      if (!gradient || !GRADIENTS.has(gradient.name)) continue;
+      into.weight += gradientCharge(gradient, large);
+      gradientShape = true;
+    }
+    if (gradientShape) into.gradients += 1;
+  };
+
+  let references = 0;
+  const referenceCounts = new Map(); // id of a mask or clipPath -> how many drawn elements reference it
+  records.filter((record) => !record.parent).forEach((record) => drawnInstances(record, ROOT_CONTEXT, (node, context) => {
+    charge(node, context, cost);
+    for (const name of RESOURCE_ATTRIBUTES) {
+      if (!(name in node.attrs)) continue;
+      references += 1;
+      const match = RESOURCE_REFERENCE.exec(node.attrs[name]);
+      if (match) referenceCounts.set(match[1], (referenceCounts.get(match[1]) ?? 0) + 1);
+    }
+  }));
+
+  if (references > MAX_RESOURCE_REFERENCES) {
+    return { problem: `has more mask or clip-path references than allowed (at most ${MAX_RESOURCE_REFERENCES}, counting each use of a group that holds one)`, weight: cost.weight };
+  }
+  // A browser redraws the whole content of a mask or clipPath for every reference, gradients and large shapes included.
+  for (const [id, count] of referenceCounts) {
+    const resource = byId.get(id);
+    if (!resource || !RESOURCE_ELEMENTS.has(resource.name)) continue;
+    const inside = { weight: 0, gradients: 0, large: 0 };
+    const subtree = (node, parent) => {
+      const mine = inherit(node, parent);
+      charge(node, mine, inside);
+      node.children.filter((child) => !NOT_DRAWN_DIRECTLY.has(child.name)).forEach((child) => subtree(child, mine));
+    };
+    subtree(resource, ROOT_CONTEXT);
+    cost.weight += inside.weight * count;
+    cost.gradients += inside.gradients * count;
+    cost.large += inside.large * count;
+  }
+  const stats = { weight: cost.weight, gradientShapes: cost.gradients, largeShapes: cost.large };
+  if (cost.gradients > MAX_GRADIENT_SHAPES) return { problem: `has too many shapes painted with a gradient (${cost.gradients}, at most ${MAX_GRADIENT_SHAPES}, counting inherited paint, uses and masks)`, ...stats };
+  if (cost.large > MAX_LARGE_SHAPES) return { problem: `has too many large shapes (${cost.large}, at most ${MAX_LARGE_SHAPES}; a large shape covers over a quarter of the picture)`, ...stats };
+  if (cost.weight > MAX_DRAW_WEIGHT) return { problem: `would be too costly to draw (weight ${cost.weight}, the limit is ${MAX_DRAW_WEIGHT})`, ...stats };
+  return { problem: null, ...stats };
+}
+
+// A problem with the numbers in one attribute, or null.
+function numberProblem(name, value) {
+  if (name === 'd' && value.length > MAX_ONE_PATH) return 'a path is longer than 4 KB';
+  if (name === 'points' && value.length > MAX_POINTS_TEXT) return 'a points list is longer than 1 KB';
+  if (!NOT_NUMERIC.has(name) && (value.match(NUMBER) ?? []).some((n) => Math.abs(Number(n)) > MAX_NUMBER)) {
+    return 'a number is larger than 100000';
+  }
+  return null;
+}
+
+// Why a single attribute value is not acceptable, or null if it is fine.
+function attributeProblem(element, name, value) {
+  const numbers = numberProblem(name, value);
+  if (numbers) return numbers;
+  if (name === 'xmlns') return element === 'svg' && value === SVG_NAMESPACE ? null : 'xmlns is only allowed on the root and must be the SVG namespace';
+  if (name === 'href') return element === 'use' && /^#[A-Za-z][A-Za-z0-9_-]*$/.test(value) ? null : 'a link must be a use of an internal #id';
+  if (name === 'id') return ID_PATTERN.test(value) ? null : 'an id has odd characters';
+  if (name === 'd') return /^[MmLlHhVvCcSsQqTtAaZz0-9 .,eE+\-]*$/.test(value) ? null : 'path data has odd characters';
+  if (name === 'aria-label') return ARIA_TEXT.test(value) ? null : 'aria-label has odd characters';
+  if (name === 'style') {
+    for (const declaration of value.split(';').map((part) => part.trim()).filter(Boolean)) {
+      const colon = declaration.indexOf(':');
+      const property = declaration.slice(0, colon).trim();
+      const setting = declaration.slice(colon + 1).trim();
+      if (colon < 1 || !STYLE_PROPERTIES.has(property) || !STYLE_VALUE.test(setting)) return 'a style setting is not on the allowed list';
+    }
+    return null;
+  }
+  if (!PLAIN_VALUE.test(value)) return 'a value has odd characters';
+  if (/url\s*\(/i.test(value) && !/^url\(#[A-Za-z][A-Za-z0-9_-]*\)$/.test(value)) return 'a url() must point at an internal #id';
+  if (/(?:^|[^A-Za-z])(?:javascript|data|vbscript)\s*:/i.test(value)) return 'a value looks like an address';
+  return null;
+}
+
+/**
+ * Problems found in a picture, as a list of plain sentences (empty list = clean). Only the elements
+ * and attributes allowed above are accepted. No text (except in title and desc), no comments with
+ * anything but plain words, no declarations, entities, CDATA, processing instructions, namespace
+ * prefixes, links that leave the file, events, styles beyond a few plain settings. At most 40 KB,
+ * 20 levels deep and 2000 elements. At most 50 <use> elements, and a <use> may not point at an element that
+ * contains (or is) another <use>, which also rules out cycles and self-reference: references can only go one
+ * level deep, so a picture cannot multiply itself into billions of draws (the "billion laughs" attack).
+ */
+export function lintSvg(text, stats = {}) {
+  if (typeof text !== 'string') return ['the picture is not text'];
+  if (Buffer.byteLength(text, 'utf8') > MAX_SVG_BYTES) return ['larger than 40 KB'];
+  if (!/^[\t\n\r -~]*$/.test(text)) return ['contains a character that is not plain ASCII (including a byte order mark or NUL)'];
+  if (text.includes('&')) return ['contains an entity (&)'];
+
+  const stack = []; // { name, id, record } for each open element
+  const records = []; // every element, with its attributes, parent and children, for the draw-cost check
+  const idsWithUse = new Set(); // ids of elements that contain a <use> (or are one)
+  const useTargets = [];
+  let position = 0;
+  let elements = 0;
+  let uses = 0;
+  let pathData = 0;
+  let sawRoot = false;
+  const fail = (message) => [message];
+
+  while (position < text.length) {
+    if (text[position] !== '<') {
+      const end = text.indexOf('<', position);
+      const chunk = text.slice(position, end === -1 ? text.length : end);
+      const inTitle = stack.length > 0 && ['title', 'desc'].includes(stack[stack.length - 1].name);
+      if (!(inTitle ? PLAIN_TEXT : /^\s*$/).test(chunk)) return fail('has text outside title and desc');
+      position += chunk.length;
+      continue;
+    }
+    if (text.startsWith('<!--', position)) {
+      const end = text.indexOf('-->', position + 4);
+      if (end === -1) return fail('has an unclosed comment');
+      const comment = text.slice(position + 4, end);
+      if (!COMMENT_TEXT.test(comment) || comment.includes('--') || comment.endsWith('-')) return fail('has a comment with more than plain words');
+      position = end + 3;
+      continue;
+    }
+    if (text[position + 1] === '!' || text[position + 1] === '?') return fail('has a declaration, CDATA or processing instruction');
+
+    const close = /^<\/([A-Za-z][A-Za-z0-9]*)\s*>/.exec(text.slice(position, position + 80));
+    if (close) {
+      if (stack.pop()?.name !== close[1]) return fail('has a closing tag that does not match');
+      position += close[0].length;
+      continue;
+    }
+
+    const open = /^<([A-Za-z][A-Za-z0-9]*)/.exec(text.slice(position, position + 80));
+    if (!open) return fail('has a tag that is not plain (a prefix, a stray < or odd name)');
+    const name = open[1];
+    if (!SVG_ELEMENTS.has(name)) return fail(`has an element that is not allowed: ${name.slice(0, 30)}`);
+    if (stack.length === 0 && (sawRoot || name !== 'svg')) return fail('must be a single svg picture');
+    sawRoot = true;
+    elements += 1;
+    if (elements > MAX_ELEMENTS) return fail('has more than 2000 elements');
+    position += open[0].length;
+
+    const seen = new Set();
+    const attrs = {};
+    let id = null;
+    let target = null;
+    for (;;) {
+      const spaces = /^\s*/.exec(text.slice(position))[0];
+      position += spaces.length;
+      if (text.startsWith('/>', position) || text[position] === '>') break;
+      if (spaces === '') return fail('has attributes that are not separated by a space');
+      const attribute = /^([A-Za-z][A-Za-z0-9-]*)\s*=\s*(?:"([^"<>]*)"|'([^'<>]*)')/.exec(text.slice(position));
+      if (!attribute) return fail('has an attribute that is not name="value"');
+      const [whole, attributeName, doubleQuoted, singleQuoted] = attribute;
+      if (!SVG_ATTRIBUTES.has(attributeName)) return fail(`has an attribute that is not allowed: ${attributeName.slice(0, 30)}`);
+      if (seen.has(attributeName)) return fail('repeats an attribute');
+      seen.add(attributeName);
+      const value = doubleQuoted ?? singleQuoted;
+      const problem = attributeProblem(name, attributeName, value);
+      if (problem) return fail(problem);
+      if (attributeName === 'xmlns' && stack.length > 0) return fail('xmlns is only allowed on the root');
+      attrs[attributeName] = value;
+      if (attributeName === 'd') {
+        pathData += value.length;
+        if (pathData > MAX_PATH_DATA) return fail('has more than 24 KB of path data in all');
+      }
+      if (attributeName === 'id') id = value;
+      if (attributeName === 'href') target = value.slice(1);
+      position += whole.length;
+    }
+    const record = { name, id, attrs, parent: stack.length > 0 ? stack[stack.length - 1].record : null, children: [] };
+    if (record.parent) record.parent.children.push(record);
+    records.push(record);
+    if (name === 'use') {
+      uses += 1;
+      if (uses > MAX_USES) return fail(`has more than ${MAX_USES} use elements`);
+      for (const open of stack) if (open.id) idsWithUse.add(open.id);
+      if (id) idsWithUse.add(id);
+      if (target) useTargets.push(target);
+    }
+    if (text.startsWith('/>', position)) {
+      position += 2;
+    } else {
+      position += 1;
+      stack.push({ name, id, record });
+      if (stack.length > MAX_DEPTH) return fail('is nested more than 20 levels deep');
+    }
+  }
+  if (stack.length > 0) return fail('has an element that is never closed');
+  if (!sawRoot) return fail('is not an svg picture');
+  if (useTargets.some((target) => idsWithUse.has(target))) return fail('has a use of an element that contains another use');
+  const cost = drawCost(records);
+  Object.assign(stats, { weight: cost.weight, gradientShapes: cost.gradientShapes, largeShapes: cost.largeShapes });
+  if (cost.problem) return fail(cost.problem);
+  return [];
+}
+
+/** The full path of one picture, refusing any name that is not a plain file name inside artDir. */
+export function artFilePath(artDir, name) {
+  if (!artPathIsSafe(name)) throw new Error(`art: "${String(name).slice(0, 40)}" is not a plain picture file name`);
+  const root = resolve(artDir);
+  const full = resolve(root, name);
+  if (!full.startsWith(root + sep)) throw new Error(`art: "${name}" is outside the art folder`);
+  return full;
+}
+
+/** The draw weight of a picture (see drawCost), or null if the picture is refused for another reason first. */
+export function svgDrawWeight(text) {
+  const stats = {};
+  const problems = lintSvg(text, stats);
+  return problems.length > 0 && stats.weight === undefined ? null : stats.weight;
+}

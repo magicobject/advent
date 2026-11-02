@@ -1,0 +1,17 @@
+{
+  "name": "advent",
+  "private": true,
+  "type": "module",
+  "version": "1.0.0",
+  "description": "An embeddable Advent calendar for church websites: one platform, many churches, each with its own story and pictures.",
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/unit/*.test.mjs",
+    "audit": "npm audit --audit-level=high",
+    "serve": "npm run build && npx wrangler dev",
+    "deploy": "npm run build && npx wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.156.1"
+  }
+}

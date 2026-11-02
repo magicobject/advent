@@ -1,0 +1,47 @@
+/* Styles for the embeddable Advent banner (src/client/teaser.js). Served from this app's own origin
+   (advent.mediawright.uk/embed/teaser.css) and loaded once by the host page alongside teaser.js. Every class is
+   prefixed mw-advent- so it cannot collide with the host site's own styles, and every colour comes from
+   --mw-advent-* custom properties, defaulted here and overridden per church by teaser.js from that church's
+   config.json. A church that wants a different look only needs its colours changed in tenants/<slug>/theme.mjs
+   and a rebuild: nothing here is church-specific. */
+[data-advent-teaser] {
+  --mw-advent-night: #14202b;
+  --mw-advent-sky2: #2E3C48;
+  --mw-advent-cream: #F2E6C4;
+  --mw-advent-accent: #E8C27A;
+  --mw-advent-accent-ink: #1F1A0B;
+  --mw-advent-door-edge: #A8813C;
+  --mw-advent-focus: #fff3c8;
+}
+[data-advent-teaser][hidden] { display: none !important; }
+.mw-advent-teaser {
+  background: linear-gradient(135deg, var(--mw-advent-night), var(--mw-advent-sky2));
+  color: var(--mw-advent-cream); border: 1px solid var(--mw-advent-door-edge); border-radius: 8px;
+  font: 16px/1.5 system-ui, sans-serif; box-sizing: border-box;
+}
+.mw-advent-teaser * { box-sizing: border-box; }
+.mw-advent-teaser-inner { display: flex; align-items: center; gap: 1.25rem; flex-wrap: wrap; padding: 1.25rem; }
+.mw-advent-teaser-thumb {
+  display: block; width: 7.5rem; aspect-ratio: 16 / 9; object-fit: cover; border-radius: 4px;
+  background: var(--mw-advent-night); flex: none;
+}
+@media (min-width: 640px) {
+  .mw-advent-teaser-thumb { width: 12rem; }
+}
+.mw-advent-teaser-text { flex: 1 1 16rem; }
+.mw-advent-teaser-heading { margin: 0 0 0.25rem; font-size: 1.4rem; color: var(--mw-advent-accent); }
+.mw-advent-teaser-line { margin: 0 0 0.75rem; min-height: 1.5em; color: var(--mw-advent-cream); }
+.mw-advent-teaser-pill {
+  display: inline-block; min-height: 44px; line-height: 44px; padding: 0 1.4em; border-radius: 999px;
+  font-weight: 600; text-decoration: none;
+  background: var(--mw-advent-accent); color: var(--mw-advent-accent-ink); border: 2px solid var(--mw-advent-accent-ink);
+}
+.mw-advent-teaser-pill:focus-visible { outline: 3px solid var(--mw-advent-focus); outline-offset: 3px; }
+
+@media (forced-colors: active) {
+  .mw-advent-teaser { border: 1px solid CanvasText; }
+  .mw-advent-teaser-pill { border: 2px solid ButtonText; }
+}
+@media print {
+  [data-advent-teaser] { display: none !important; }
+}

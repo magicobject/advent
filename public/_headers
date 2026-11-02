@@ -1,0 +1,47 @@
+# kington: pictures and scene (tighten only: a picture may use inline styles and nothing else), day files
+# and the public config (not a secret: anyone who knows an address can still fetch one, but kept out of
+# search), and CORS so a church embedding the teaser script on its own site can fetch all of them.
+/kington/art/*
+  Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox
+  Access-Control-Allow-Origin: *
+
+/kington/scene.svg
+  Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox
+  Access-Control-Allow-Origin: *
+
+/kington/day-*.json
+  X-Robots-Tag: noindex
+  Access-Control-Allow-Origin: *
+
+/kington/config.json
+  X-Robots-Tag: noindex
+  Access-Control-Allow-Origin: *
+
+# The embed script and stylesheet are fetched cross-origin from every church site that embeds the teaser.
+/embed/*
+  Access-Control-Allow-Origin: *
+
+/assets/advent-core/date.js
+  Cache-Control: public, max-age=3600
+
+/assets/advent-core/day.js
+  Cache-Control: public, max-age=3600
+
+/assets/advent-core/preview.js
+  Cache-Control: public, max-age=3600
+
+/assets/advent-core/logic.js
+  Cache-Control: public, max-age=3600
+
+/assets/advent.js
+  Cache-Control: public, max-age=3600
+
+/assets/advent.css
+  Cache-Control: public, max-age=3600
+
+/embed/teaser.js
+  Cache-Control: public, max-age=3600
+
+/embed/teaser.css
+  Cache-Control: public, max-age=3600
+
