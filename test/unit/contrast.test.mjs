@@ -1,17 +1,9 @@
-// WCAG 2 contrast checks for the colour pairings the Advent calendar uses, computed from every tenant's
-// theme.mjs (never eyeballed). Carried over from the kington-parishes repo's own Advent module.
+// WCAG 2 contrast checks for the colour pairings the Advent calendar uses, computed from the real
+// content/theme.mjs (never eyeballed). Carried over from the kington-parishes repo's own Advent module.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync, readdirSync } from 'node:fs';
-import { pathToFileURL } from 'node:url';
-import { join } from 'node:path';
-
-const TENANTS_DIR = new URL('../../tenants/', import.meta.url);
-const tenantNames = readdirSync(TENANTS_DIR, { withFileTypes: true }).filter((e) => e.isDirectory()).map((e) => e.name);
-const tenants = await Promise.all(tenantNames.map(async (name) => {
-  const { theme } = await import(pathToFileURL(join(new URL(TENANTS_DIR).pathname.replace(/^\/([A-Za-z]:)/, '$1'), name, 'theme.mjs')).href);
-  return [name, theme];
-}));
+import { readFileSync } from 'node:fs';
+import { theme } from '../../content/theme.mjs';
 
 function luminance(hex) {
   const [r, g, b] = [1, 3, 5].map((i) => parseInt(hex.slice(i, i + 2), 16) / 255)
@@ -50,27 +42,22 @@ describe('contrast', () => {
     ['focus', 'door', 3], // the pale "today" ring against an open door
     ['accent', 'sky2', 4.5], // the banner heading on the lighter end of its gradient
   ];
-  // Every tenant's own palette must pass, including the _example template a new church starts from.
-  for (const [name, theme] of tenants) {
-    for (const [foreground, background, minimum] of pairs) {
-      test(`${name}: ${foreground} on ${background} is at least ${minimum}:1`, () => {
-        const actual = ratio(foreground, background, theme);
-        assert.ok(actual >= minimum, `${foreground} on ${background} is ${actual.toFixed(2)}:1`);
-      });
-    }
+  for (const [foreground, background, minimum] of pairs) {
+    test(`${foreground} on ${background} is at least ${minimum}:1`, () => {
+      const actual = ratio(foreground, background, theme);
+      assert.ok(actual >= minimum, `${foreground} on ${background} is ${actual.toFixed(2)}:1`);
+    });
   }
 });
 
 // The two buttons of the "Not quite yet" card ("Maybe later" is the filled gold primary, "Open it anyway" the
 // quieter outline). Read from the stylesheet's custom properties so the test follows the swap, then computed
-// against the Kington palette (the stylesheet's own custom properties have no theme, so any tenant's colours
-// would show the same ratios; Kington is simply the one real set of numbers on record here).
+// against the real theme.
 describe('the gentle card buttons', () => {
-  const kington = tenants.find(([name]) => name === 'kington')[1];
   const css = readFileSync(new URL('../../src/client/advent.css', import.meta.url), 'utf8');
   const property = (name) => new RegExp(`--advent-gentle-${name}:\\s*([^;]+);`).exec(css)?.[1].trim();
   const colourOf = (token) => (token === 'transparent' ? 'paper' : /var\(--advent-([a-z-]+)\)/.exec(token)[1].replace(/-(\w)/g, (_, l) => l.toUpperCase()));
-  const r = (fg, bg) => ratio(fg, bg, kington);
+  const r = (fg, bg) => ratio(fg, bg, theme);
 
   test('"Maybe later" is the filled gold primary: accent ink on accent, at least 4.5:1', () => {
     assert.equal(property('later-bg'), 'var(--advent-accent)');
@@ -87,13 +74,13 @@ describe('the gentle card buttons', () => {
   });
 
   test('every colour named is a real token', () => {
-    for (const name of ['later-bg', 'later-fg', 'anyway-fg', 'anyway-border']) assert.ok(kington.colours[colourOf(property(name))], name);
+    for (const name of ['later-bg', 'later-fg', 'anyway-fg', 'anyway-border']) assert.ok(theme.colours[colourOf(property(name))], name);
   });
 });
 
-// Every colour in the calendar page stylesheet comes from a --advent-* token (set per tenant by
-// scripts/build.mjs from that church's own theme.mjs), so every pairing is one the table above checked. The
-// only literal colours allowed are black and white, in the print stylesheet.
+// Every colour in the calendar page stylesheet comes from a --advent-* token (set by scripts/build.mjs from
+// content/theme.mjs), so every pairing is one the table above checked. The only literal colours allowed are
+// black and white, in the print stylesheet.
 describe('the calendar stylesheet uses only tokens', () => {
   test('src/client/advent.css has no literal colours except black and white (print)', () => {
     const css = readFileSync(new URL('../../src/client/advent.css', import.meta.url), 'utf8');

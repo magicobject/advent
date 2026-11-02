@@ -37,24 +37,20 @@ describe('the two caps', () => {
     assert.equal(stats(R(`${defs}<circle r="5" fill="url(#g)" stroke="url(#g)"/>`)).gradientShapes, 1);
   });
 
-  test('every tenant\'s real pictures and scene stay well under both caps (at least 2.5 times the real maximum)', () => {
-    const tenantsDir = new URL('../../tenants/', import.meta.url);
-    const names = readdirSync(tenantsDir, { withFileTypes: true }).filter((e) => e.isDirectory() && !e.name.startsWith('_')).map((e) => e.name);
-    assert.ok(names.length > 0, 'expected at least one tenant');
-    for (const name of names) {
-      const folder = new URL(`${name}/`, tenantsDir);
-      const files = [...readdirSync(new URL('art/', folder)).map((n) => `art/${n}`), ...readdirSync(folder).filter((n) => /^scene.*\.svg$/.test(n))];
-      let [gradients, large, weight] = [0, 0, 0];
-      for (const file of files) {
-        const found = stats(readFileSync(new URL(file, folder), 'utf8'));
-        gradients = Math.max(gradients, found.gradientShapes);
-        large = Math.max(large, found.largeShapes);
-        weight = Math.max(weight, found.weight);
-      }
-      assert.ok(gradients * 2.5 <= MAX_GRADIENT_SHAPES, `${name}: real maximum of gradient shapes: ${gradients}`);
-      assert.ok(large * 2.5 <= MAX_LARGE_SHAPES, `${name}: real maximum of large shapes: ${large}`);
-      assert.ok(weight * 2.5 <= MAX_DRAW_WEIGHT, `${name}: real maximum weight: ${weight}`);
+  test('the real pictures and scene stay well under both caps (at least 2.5 times the real maximum)', () => {
+    const folder = new URL('../../content/', import.meta.url);
+    const files = [...readdirSync(new URL('art/', folder)).map((n) => `art/${n}`), ...readdirSync(folder).filter((n) => /^scene.*\.svg$/.test(n))];
+    let [gradients, large, weight] = [0, 0, 0];
+    for (const file of files) {
+      const found = stats(readFileSync(new URL(file, folder), 'utf8'));
+      gradients = Math.max(gradients, found.gradientShapes);
+      large = Math.max(large, found.largeShapes);
+      weight = Math.max(weight, found.weight);
     }
+    assert.ok(files.length >= 27, 'the 26 pictures and the scene');
+    assert.ok(gradients * 2.5 <= MAX_GRADIENT_SHAPES, `real maximum of gradient shapes: ${gradients}`);
+    assert.ok(large * 2.5 <= MAX_LARGE_SHAPES, `real maximum of large shapes: ${large}`);
+    assert.ok(weight * 2.5 <= MAX_DRAW_WEIGHT, `real maximum weight: ${weight}`);
   });
 });
 

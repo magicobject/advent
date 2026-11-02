@@ -1,8 +1,10 @@
 // Unit tests for src/core/logic.mjs and day.mjs: the pure pieces the calendar page script is built from
 // (settings, addresses, share links, labels, day-file checking). No browser needed. Carried over and adapted
-// from the kington-parishes repo's own Advent module: addresses are now relative to the page (one church per
-// path) instead of hardcoded to /advent/, and the per-site launch-flag settings (goLive, previewEnabled,
-// enabled, slug) are gone — a tenant going live is simply its folder being merged and deployed.
+// from the kington-parishes repo's own Advent module: addresses are now relative to the page (there is one
+// shared calendar, served from one address) instead of hardcoded to /advent/, and the per-site launch-flag
+// settings (goLive, previewEnabled, enabled) are gone — this calendar going live is simply content/ being
+// merged and deployed. `siteName` in the test fixtures below is a stand-in for a church's `?site=`/
+// `data-site-name` override (see advent.js and teaser.js); the real content/theme.mjs carries none.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -11,7 +13,7 @@ import {
 } from '../../src/core/logic.mjs';
 import { validateDayPayload, BONUS_DAY as DAY_BONUS_DAY, DAY_COUNT } from '../../src/core/day.mjs';
 import { BONUS_DAY as DATE_BONUS_DAY, londonDateParts } from '../../src/core/date.mjs';
-import { content } from '../../tenants/kington/content.mjs';
+import { content } from '../../content/content.mjs';
 
 const DATA = {
   startMonth: '12', startDay: '1', endMonth: '12', endDay: '25', archiveMonth: '1', archiveDay: '6',
@@ -318,10 +320,18 @@ describe('fetchDayFile: one place that fetches, checks and caps a day file', () 
     fn.calls = calls;
     return fn;
   };
+  // fetchDayFile creates its AbortSignal.timeout() BEFORE it does anything else (even a day number bad
+  // enough to reject before a request is ever attempted still starts one): with the real 10-second default
+  // that is a real, uncancellable native timer per call, and every test below makes several calls. Left at
+  // the default, those timers dangle for a real 10 seconds past this file's tests finishing - which was
+  // narrowly enough, under CI's own load, to get unrelated tests elsewhere in the same run torn down
+  // mid-run ("cancelledByParent") rather than completing cleanly. A short override removes the dangling
+  // timers entirely; DAY_FETCH_TIMEOUT_MS itself is still asserted directly, in the describe block below.
+  const SHORT_TIMEOUT = { timeoutMs: 1000 };
 
   test('asks for exactly the day file, with no cookies, and returns the checked file', async () => {
     const fn = fetchWith(reply(goodText));
-    const file = await fetchDayFile(7, fn);
+    const file = await fetchDayFile(7, fn, SHORT_TIMEOUT);
     assert.equal(file.day, 7);
     assert.equal(fn.calls.length, 1);
     assert.equal(fn.calls[0].url, 'day-07.json');
@@ -329,12 +339,12 @@ describe('fetchDayFile: one place that fetches, checks and caps a day file', () 
   });
 
   test('accepts a content type with a charset', async () => {
-    assert.equal((await fetchDayFile(7, fetchWith(reply(goodText, { type: 'application/json; charset=utf-8' })))).day, 7);
+    assert.equal((await fetchDayFile(7, fetchWith(reply(goodText, { type: 'application/json; charset=utf-8' })), SHORT_TIMEOUT)).day, 7);
   });
 
   test('never makes a request for a day that is not a whole number 1 to 26', async () => {
     const fn = fetchWith(reply(goodText));
-    for (const bad of [0, 27, '7', 1.5, null, '../x']) await assert.rejects(() => fetchDayFile(bad, fn), RangeError, String(bad));
+    for (const bad of [0, 27, '7', 1.5, null, '../x']) await assert.rejects(() => fetchDayFile(bad, fn, SHORT_TIMEOUT), RangeError, String(bad));
     assert.equal(fn.calls.length, 0);
   });
 
@@ -353,7 +363,7 @@ describe('fetchDayFile: one place that fetches, checks and caps a day file', () 
       'nothing': null,
     };
     for (const [name, response] of Object.entries(cases)) {
-      await assert.rejects(() => fetchDayFile(7, fetchWith(response)), Error, name);
+      await assert.rejects(() => fetchDayFile(7, fetchWith(response), SHORT_TIMEOUT), Error, name);
     }
   });
 });

@@ -1,33 +1,30 @@
 #!/usr/bin/env node
-// Builds public/ from tenants/ and src/. Generic across every church: nothing here reads a church's name or
-// knows about any church but the one it is currently building.
+// Builds public/ from content/ and src/. There is ONE Advent calendar, shared by every church that embeds it
+// (see docs/embedding.md) — not one per church — so there is no per-tenant loop here any more.
 //
-// For each tenants/<slug>/ (skipping any folder starting with "_", like tenants/_example/) it:
-//   1. validates theme.mjs and content.mjs (schema.mjs) and the slug itself (schema.mjs's slugIsSafe);
-//   2. lints every picture (src/core/svg-lint.mjs): the art folder may hold only day-01.svg..day-25.svg
-//      (and day-26.svg when there is a bonus day), each one a real file that passes the picture check;
-//   3. writes, all from that checked data:
-//        public/<slug>/day-01.json .. day-25(/26).json   one plain-text file per day (validated again)
-//        public/<slug>/art/day-NN.svg                    the pictures, re-linted on the way out
-//        public/<slug>/scene.svg                         the church's own scene, or the shared default
-//        public/<slug>/config.json                       the small PUBLIC settings the calendar page's own
-//                                                         script and the cross-origin teaser embed both read
-//        public/<slug>/index.html                        the calendar page itself
+//   1. validates content/theme.mjs and content/content.mjs (src/core/schema.mjs);
+//   2. lints every picture (src/core/svg-lint.mjs): content/art/ may hold only day-01.svg..day-25.svg (and
+//      day-26.svg when there is a bonus day), each one a real file that passes the picture check;
+//   3. writes, all from that checked data, into public/:
+//        day-01.json .. day-25(/26).json   one plain-text file per day (validated again)
+//        art/day-NN.svg                    the pictures, re-linted on the way out
+//        scene.svg                         the calendar's own scene, or the shared default
+//        config.json                       the small PUBLIC settings the cross-origin teaser embed reads
+//        index.html                        the calendar page itself
 // Every generated file carries an AUTO-GENERATED banner (JSON cannot) and is written only when its text has
 // changed, so a rebuild with nothing new touches nothing.
 //
-// It also writes the shared files every tenant page uses (assets/advent.js, advent.css, the four pure core
-// modules, embed/teaser.js, embed/teaser.css), the root landing page, and public/_headers.
-import { createHash } from 'node:crypto';
+// It also writes the browser code every page uses (assets/advent.js, advent.css, the four pure core modules,
+// embed/teaser.js, embed/teaser.css), the 404 page, and public/_headers.
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { DAY_COUNT, BONUS_DAY, COLOUR_NAMES, slugIsSafe, validateContent, validateTheme } from '../src/core/schema.mjs';
+import { DAY_COUNT, COLOUR_NAMES, validateContent, validateTheme } from '../src/core/schema.mjs';
 import { validateDayPayload } from '../src/core/day.mjs';
 import { lintSvg } from '../src/core/svg-lint.mjs';
 
 const ROOT = dirname(dirname(fileURLToPath(import.meta.url)));
-const TENANTS_DIR = join(ROOT, 'tenants');
+const CONTENT_DIR = join(ROOT, 'content');
 const SRC_DIR = join(ROOT, 'src');
 const PUBLIC_DIR = join(ROOT, 'public');
 const MONTH_NAMES = [
@@ -50,13 +47,12 @@ function writeIfChanged(path, text) {
   writeFileSync(path, text);
 }
 
-const shortHash = (text) => createHash('sha256').update(text).digest('hex').slice(0, 10);
 const escapeHtml = (value) => String(value)
   .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 const dayNumber = (day) => String(day).padStart(2, '0');
 
 // ---------------------------------------------------------------------------
-// Shared, church-independent assets
+// Shared browser code
 
 function sharedAssets() {
   const read = (path) => readFileSync(join(SRC_DIR, path), 'utf8');
@@ -86,20 +82,18 @@ function sharedAssets() {
 // Pictures
 
 function readArtDir(dir) {
-  let entries;
   try {
-    entries = readdirSync(dir, { withFileTypes: true });
+    return readdirSync(dir, { withFileTypes: true });
   } catch {
     return null;
   }
-  return entries;
 }
 
-// Looks at every picture a tenant names. Returns the set of names that exist and pass the lint; throws one
-// error listing every problem. The art folder must hold only the expected day-NN.svg files, each a real file
-// (not a link).
-function checkArt(tenantDir, expectedNames) {
-  const artDir = join(tenantDir, 'art');
+// Looks at every picture the content names. Returns the set of names that exist and pass the lint; throws
+// one error listing every problem. The art folder must hold only the expected day-NN.svg files, each a real
+// file (not a link).
+function checkArt(expectedNames) {
+  const artDir = join(CONTENT_DIR, 'art');
   const entries = readArtDir(artDir);
   const problems = [];
   const present = new Set();
@@ -126,18 +120,18 @@ function checkArt(tenantDir, expectedNames) {
   return present;
 }
 
-// The church's own scene (tenants/<slug>/scene.svg, named by theme.scene) or the shared default hills scene.
+// The calendar's own scene (content/scene.svg, named by theme.scene) or the shared default hills scene.
 // Either way it is checked like any other picture.
-function resolveScene(tenantDir, theme) {
+function resolveScene(theme) {
   if (theme.scene) {
-    const full = join(tenantDir, theme.scene);
+    const full = join(CONTENT_DIR, theme.scene);
     let info = null;
     try {
       info = lstatSync(full);
     } catch {
       info = null;
     }
-    if (!info || info.isSymbolicLink() || !info.isFile()) throw new Error(`scene: "${theme.scene}" is named in the theme but is not a file in this tenant's folder`);
+    if (!info || info.isSymbolicLink() || !info.isFile()) throw new Error(`scene: "${theme.scene}" is named in the theme but is not a file in content/`);
     const text = readFileSync(full, 'utf8');
     const problems = lintSvg(text);
     if (problems.length > 0) throw new Error(`scene: "${theme.scene}" refused: ${problems.join('; ')}`);
@@ -159,7 +153,7 @@ function themeStyleBlock(theme) {
   return `:root {\n${lines.join('\n')}\n}`;
 }
 
-// The small set of colours the cross-origin teaser embed is allowed to read (never the church's whole palette).
+// The small set of colours the cross-origin teaser embed is allowed to read (never the full palette).
 const TEASER_COLOURS = ['night', 'sky2', 'cream', 'accent', 'accentInk', 'doorEdge', 'focus'];
 
 // ---------------------------------------------------------------------------
@@ -186,10 +180,19 @@ function seasonRangeText({ start, end }) {
   return `${start.day} ${month(start.month)} to ${end.day} ${month(end.month)}`;
 }
 
+// "Advent calendar" by default, or "<name> Advent calendar" / "Advent calendar — <name>" once a church has
+// given its own name — either baked into theme.siteName (not used any more, see content/theme.mjs) or, far
+// more commonly, supplied per-visit by `?site=` on the page's own address. Since the BUILD never knows a
+// visiting church's name, these are the no-override defaults; src/client/advent.js rewrites them client-side
+// once it reads `?site=` (see its own comment for the exact rule and the safety check it shares with the
+// build, src/core/day.mjs's siteNameIsSafe).
+const headingText = (siteName) => (siteName ? `${siteName} Advent calendar` : 'Advent calendar');
+const titleText = (siteName) => (siteName ? `Advent calendar — ${siteName}` : 'Advent calendar');
+
 function pageSettingsAttributes(theme, hasBonus) {
   const { start, end, archiveUntil } = theme.season;
   const bonus = hasBonus ? theme.bonus : null;
-  const opens = `The Advent calendar opens on ${start.day} ${MONTH_NAMES[start.month - 1]}.`;
+  const opens = `The Advent calendar opens on ${start.day} ${MONTH_NAMES[start.month - 1]}.`;
   const pairs = [
     ['data-advent', 'true'],
     ['data-time-zone', theme.timeZone],
@@ -210,8 +213,8 @@ const attributeText = (pairs) => pairs.map(([name, value]) => `${name}="${escape
 
 function renderPage(theme, hasBonus) {
   const pairs = pageSettingsAttributes(theme, hasBonus);
-  const title = escapeHtml(`Advent calendar — ${theme.siteName}`);
-  const heading = escapeHtml(`${theme.siteName} Advent calendar`);
+  const title = escapeHtml(titleText(theme.siteName));
+  const heading = escapeHtml(headingText(theme.siteName));
   const servedText = `The Advent calendar needs JavaScript to open its doors. It runs from ${seasonRangeText(theme.season)}.`;
   const description = escapeHtml(`Open a new door each day from ${seasonRangeText(theme.season)} to read the Christmas story, from Genesis to Bethlehem.`);
   return `<!doctype html>
@@ -253,78 +256,6 @@ main { max-width: 760px; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
 `;
 }
 
-// ---------------------------------------------------------------------------
-// One tenant
-
-async function buildTenant(slug) {
-  if (!slugIsSafe(slug)) throw new Error(`tenants/${slug}: not a usable church address (${slug})`);
-  const tenantDir = join(TENANTS_DIR, slug);
-  const themeModule = await import(pathToFileURL(join(tenantDir, 'theme.mjs')));
-  const contentModule = await import(pathToFileURL(join(tenantDir, 'content.mjs')));
-  const theme = validateTheme(themeModule.theme);
-  const content = validateContent(contentModule.content);
-
-  const bonusEntry = content.bonus ?? null;
-  if (bonusEntry && !theme.bonus) throw new Error(`tenants/${slug}: content has a bonus day but theme has no "bonus"`);
-  const hasBonus = Boolean(bonusEntry);
-  const allDays = hasBonus ? [...content.days, bonusEntry] : content.days;
-
-  const expectedArt = [...new Set(allDays.map((entry) => entry.art))];
-  const presentArt = checkArt(tenantDir, expectedArt);
-  const scene = resolveScene(tenantDir, theme);
-
-  const outDir = join(PUBLIC_DIR, slug);
-  rmSync(join(outDir, 'art'), { recursive: true, force: true });
-  for (const entry of allDays) {
-    const file = dayFile(entry, presentArt.has(entry.art));
-    writeIfChanged(join(outDir, `day-${dayNumber(entry.day)}.json`), `${JSON.stringify(file, null, 2)}\n`);
-  }
-  for (const name of presentArt) writeIfChanged(join(outDir, 'art', name), readFileSync(join(tenantDir, 'art', name), 'utf8'));
-  writeIfChanged(join(outDir, 'scene.svg'), scene.text);
-
-  const sceneFileName = 'scene.svg';
-  writeIfChanged(join(outDir, 'index.html'), renderPage({ ...theme, sceneFileName }, hasBonus));
-
-  const config = {
-    siteName: theme.siteName,
-    timeZone: theme.timeZone,
-    season: theme.season,
-    dayCount: DAY_COUNT,
-    bonus: hasBonus ? theme.bonus : null,
-    scene: sceneFileName,
-    colours: Object.fromEntries(TEASER_COLOURS.map((name) => [name, theme.colours[name]])),
-  };
-  writeIfChanged(join(outDir, 'config.json'), `${JSON.stringify(config, null, 2)}\n`);
-
-  return { slug, hasBonus };
-}
-
-// ---------------------------------------------------------------------------
-// The root landing page and _headers
-
-function rootPage(tenants) {
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Advent calendars for churches</title>
-<meta name="robots" content="noindex, nofollow">
-<style>body { font: 16px/1.5 system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; color: #1c2420; }</style>
-</head>
-<body>
-<h1>Advent calendars for churches</h1>
-<p>This is the MediaWright Advent calendar platform. Each church's calendar is served at its own address and is
-meant to be embedded on that church's own website, not browsed from here.</p>
-<p>${tenants.length} ${tenants.length === 1 ? 'church is' : 'churches are'} currently built.</p>
-</body>
-</html>
-`;
-}
-
-// Cloudflare's _headers format allows only ONE wildcard per rule, so every rule below is either a single
-// trailing wildcard or named once per church (a church's folder name can never collide with these: schema.mjs's
-// RESERVED_SLUGS keeps every name this app's own routes use out of tenants/).
 function notFoundPage() {
   return `<!doctype html>
 <html lang="en">
@@ -337,36 +268,35 @@ function notFoundPage() {
 </head>
 <body>
 <h1>Page not found</h1>
-<p>There is no church calendar at this address.</p>
+<p>There is nothing at this address.</p>
 </body>
 </html>
 `;
 }
 
-function headersFile(sharedFiles, tenants) {
+// Cloudflare's _headers format allows only one wildcard per rule.
+function headersFile(sharedFiles) {
   const lines = [];
   const picturePolicy = "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox";
-  for (const { slug } of tenants) {
-    lines.push(`# ${slug}: pictures and scene (tighten only: a picture may use inline styles and nothing else), day files`);
-    lines.push(`# and the public config (not a secret: anyone who knows an address can still fetch one, but kept out of`);
-    lines.push('# search), and CORS so a church embedding the teaser script on its own site can fetch all of them.');
-    lines.push(`/${slug}/art/*`);
-    lines.push(`  ${picturePolicy}`);
-    lines.push('  Access-Control-Allow-Origin: *');
-    lines.push('');
-    lines.push(`/${slug}/scene.svg`);
-    lines.push(`  ${picturePolicy}`);
-    lines.push('  Access-Control-Allow-Origin: *');
-    lines.push('');
-    lines.push(`/${slug}/day-*.json`);
-    lines.push('  X-Robots-Tag: noindex');
-    lines.push('  Access-Control-Allow-Origin: *');
-    lines.push('');
-    lines.push(`/${slug}/config.json`);
-    lines.push('  X-Robots-Tag: noindex');
-    lines.push('  Access-Control-Allow-Origin: *');
-    lines.push('');
-  }
+  lines.push('# Pictures and scene (tighten only: a picture may use inline styles and nothing else), day files and');
+  lines.push('# the public config (not a secret: anyone who knows the address can still fetch one, but kept out of');
+  lines.push('# search), and CORS so a church embedding the teaser script on its own site can fetch all of them.');
+  lines.push('/art/*');
+  lines.push(`  ${picturePolicy}`);
+  lines.push('  Access-Control-Allow-Origin: *');
+  lines.push('');
+  lines.push('/scene.svg');
+  lines.push(`  ${picturePolicy}`);
+  lines.push('  Access-Control-Allow-Origin: *');
+  lines.push('');
+  lines.push('/day-*.json');
+  lines.push('  X-Robots-Tag: noindex');
+  lines.push('  Access-Control-Allow-Origin: *');
+  lines.push('');
+  lines.push('/config.json');
+  lines.push('  X-Robots-Tag: noindex');
+  lines.push('  Access-Control-Allow-Origin: *');
+  lines.push('');
   lines.push('# The embed script and stylesheet are fetched cross-origin from every church site that embeds the teaser.');
   lines.push('/embed/*');
   lines.push('  Access-Control-Allow-Origin: *');
@@ -384,30 +314,49 @@ function headersFile(sharedFiles, tenants) {
 
 async function main() {
   const sharedFiles = sharedAssets();
-  const slugs = readdirSync(TENANTS_DIR, { withFileTypes: true })
-    .filter((entry) => entry.isDirectory() && !entry.name.startsWith('_'))
-    .map((entry) => entry.name)
-    .sort();
 
-  const tenants = [];
-  const failures = [];
-  for (const slug of slugs) {
-    try {
-      tenants.push(await buildTenant(slug));
-    } catch (error) {
-      failures.push(`${slug}: ${error.message}`);
-    }
-  }
-  if (failures.length > 0) {
-    console.error(`Build failed:\n  ${failures.join('\n  ')}`);
-    process.exitCode = 1;
-    return;
-  }
+  const themeModule = await import(pathToFileURL(join(CONTENT_DIR, 'theme.mjs')));
+  const contentModule = await import(pathToFileURL(join(CONTENT_DIR, 'content.mjs')));
+  const theme = validateTheme(themeModule.theme);
+  const content = validateContent(contentModule.content);
 
-  writeIfChanged(join(PUBLIC_DIR, 'index.html'), rootPage(tenants));
+  const bonusEntry = content.bonus ?? null;
+  if (bonusEntry && !theme.bonus) throw new Error('content has a bonus day but theme has no "bonus"');
+  const hasBonus = Boolean(bonusEntry);
+  const allDays = hasBonus ? [...content.days, bonusEntry] : content.days;
+
+  const expectedArt = [...new Set(allDays.map((entry) => entry.art))];
+  const presentArt = checkArt(expectedArt);
+  const scene = resolveScene(theme);
+
+  rmSync(join(PUBLIC_DIR, 'art'), { recursive: true, force: true });
+  for (const entry of allDays) {
+    const file = dayFile(entry, presentArt.has(entry.art));
+    writeIfChanged(join(PUBLIC_DIR, `day-${dayNumber(entry.day)}.json`), `${JSON.stringify(file, null, 2)}\n`);
+  }
+  for (const name of presentArt) writeIfChanged(join(PUBLIC_DIR, 'art', name), readFileSync(join(CONTENT_DIR, 'art', name), 'utf8'));
+  writeIfChanged(join(PUBLIC_DIR, 'scene.svg'), scene.text);
+
+  const sceneFileName = 'scene.svg';
+  writeIfChanged(join(PUBLIC_DIR, 'index.html'), renderPage({ ...theme, sceneFileName }, hasBonus));
+
+  const config = {
+    siteName: theme.siteName,
+    timeZone: theme.timeZone,
+    season: theme.season,
+    dayCount: DAY_COUNT,
+    bonus: hasBonus ? theme.bonus : null,
+    scene: sceneFileName,
+    colours: Object.fromEntries(TEASER_COLOURS.map((name) => [name, theme.colours[name]])),
+  };
+  writeIfChanged(join(PUBLIC_DIR, 'config.json'), `${JSON.stringify(config, null, 2)}\n`);
+
   writeIfChanged(join(PUBLIC_DIR, '404.html'), notFoundPage());
-  writeIfChanged(join(PUBLIC_DIR, '_headers'), headersFile(sharedFiles, tenants));
-  console.log(`Built ${tenants.length} tenant${tenants.length === 1 ? '' : 's'}: ${tenants.map((t) => t.slug).join(', ') || '(none)'}`);
+  writeIfChanged(join(PUBLIC_DIR, '_headers'), headersFile(sharedFiles));
+  console.log(`Built the calendar: ${DAY_COUNT}${hasBonus ? ' + 1 bonus' : ''} days, ${presentArt.size} pictures.`);
 }
 
-main();
+main().catch((error) => {
+  console.error(`Build failed: ${error.message}`);
+  process.exitCode = 1;
+});

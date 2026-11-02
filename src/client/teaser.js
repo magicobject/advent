@@ -3,16 +3,18 @@
 // FOREIGN origin — the church's own site, not advent.mediawright.uk — so every address it uses must be
 // absolute, and it never assumes anything about the host page's markup beyond the one container element.
 //
-// A church's embed snippet is two lines (see docs/embedding.md):
-//   <div data-advent-teaser data-slug="kington"></div>
+// There is one shared calendar (see content/theme.mjs and docs/embedding.md), so a church's embed snippet is
+// two lines with nothing to fill in but an optional name and colours:
+//   <div data-advent-teaser data-site-name="St Mary's"></div>
 //   <script src="https://advent.mediawright.uk/embed/teaser.js" defer></script>
 // The script works out this app's own origin from its OWN <script src>, so the same file works for every
-// church and for a staging deploy, with nothing to edit in the snippet beyond the slug.
+// church and for a staging deploy.
 //
-// Same safety rules as the calendar page: nothing is stored in the browser; text from the config and day
-// files is only ever set as plain text, never as markup; every address is built from a checked whole number
-// or a plain file name; requests are same-method GET with credentials omitted (nothing of the church's own
-// session, if it has one, is ever sent to advent.mediawright.uk).
+// Same safety rules as the calendar page: nothing is stored in the browser; text from the config, the host
+// page's own data attributes and the day files is only ever set as plain text, never as markup; every
+// address is built from a checked whole number or a plain file name; requests are same-method GET with
+// credentials omitted (nothing of the church's own session, if it has one, is ever sent to
+// advent.mediawright.uk).
 (function () {
   const script = document.currentScript;
   if (!script) return;
@@ -24,14 +26,13 @@
   }
 
   const DAY_COUNT = 25;
-  const BONUS_DAY = 26;
   const MAX_JSON_BYTES = 16 * 1024;
   const FETCH_TIMEOUT_MS = 8000;
-  const SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
-  const MONTH_NAMES = [
-    'January', 'February', 'March', 'April', 'May', 'June',
-    'July', 'August', 'September', 'October', 'November', 'December',
-  ];
+  // The same positive character list as src/core/day.mjs's NAME_ALLOWED, kept in step by
+  // test/unit/teaser.test.mjs: letters, marks, digits, space, . , ' - and the typographic apostrophe.
+  const NAME_ALLOWED = /^[\p{L}\p{M}0-9 .,'\-’]{1,80}$/u;
+  const COLOUR_NAMES = ['night', 'sky2', 'cream', 'accent', 'accentInk', 'doorEdge', 'focus'];
+  const HEX_COLOUR = /^#[0-9a-fA-F]{6}$/;
 
   function make(tag, className, text) {
     const node = document.createElement(tag);
@@ -79,12 +80,12 @@
 
   // ---- building absolute addresses ----
 
-  function tenantUrl(slug, path) {
-    return `${origin}/${slug}/${path}`;
-  }
+  const rootUrl = (path) => `${origin}/${path}`;
 
-  function calendarUrl(slug) {
-    return tenantUrl(slug, '');
+  // The shared calendar's own address, carrying the embed's name override forward (so clicking through keeps
+  // the same personalisation the banner showed) — never anything else from the host page's address.
+  function calendarUrl(siteName) {
+    return siteName ? `${origin}/?site=${encodeURIComponent(siteName)}` : `${origin}/`;
   }
 
   // ---- fetching, size-capped and checked the same way the calendar page does ----
@@ -121,39 +122,58 @@
       (file.art === undefined || (typeof file.art === 'string' && /^[a-z0-9-]+\.svg$/.test(file.art)));
   }
 
+  // A church's own name for the banner (`data-site-name` on the embed's container), or '' if it gave none or
+  // gave something that fails the same character rule the build and the calendar page both enforce.
+  function siteNameOverride(root) {
+    const value = root.dataset.siteName;
+    return typeof value === 'string' && NAME_ALLOWED.test(value) ? value : '';
+  }
+
+  // A church's own colour overrides (`data-night`, `data-accent`, and so on, matching COLOUR_NAMES in
+  // kebab-case), each only used if it is a plain #rrggbb; anything else is dropped and the shared calendar's
+  // own colour for that name is used instead.
+  function colourOverrides(root) {
+    const found = {};
+    for (const name of COLOUR_NAMES) {
+      const attribute = `data-${name.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`;
+      const value = root.getAttribute(attribute);
+      if (typeof value === 'string' && HEX_COLOUR.test(value)) found[name] = value;
+    }
+    return found;
+  }
+
   // ---- rendering ----
 
-  function teaserWords(season, today, title, config) {
-    const heading = `Advent at ${config.siteName}`;
-    if (season === 'archive') return { heading, line: `The Christmas story, in ${config.dayCount} short pieces`, button: 'Open the calendar' };
+  function teaserWords(season, today, title, siteName, dayCount) {
+    const heading = siteName ? `Advent at ${siteName}` : 'Advent calendar';
+    if (season === 'archive') return { heading, line: `The Christmas story, in ${dayCount} short pieces`, button: 'Open the calendar' };
     return { heading, line: title ? `Day ${today} · ${title}` : `Day ${today}`, button: "Open today's door" };
   }
 
   function applyColours(root, colours) {
-    if (!colours || typeof colours !== 'object') return;
-    for (const name of ['night', 'sky2', 'cream', 'accent', 'accentInk', 'doorEdge', 'focus']) {
+    for (const name of COLOUR_NAMES) {
       const value = colours[name];
-      if (typeof value === 'string' && /^#[0-9a-fA-F]{6}$/.test(value)) {
+      if (typeof value === 'string' && HEX_COLOUR.test(value)) {
         root.style.setProperty(`--mw-advent-${name.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`, value);
       }
     }
   }
 
-  async function render(root, slug, config, season, parts) {
+  async function render(root, config, siteName, season, parts) {
     const today = season === 'live' ? 1 - daysUntilStart(parts, config.season) : 0;
-    const words = teaserWords(season, today, null, config);
+    const words = teaserWords(season, today, null, siteName, config.dayCount);
     root.className = 'mw-advent-teaser';
-    applyColours(root, config.colours);
+    applyColours(root, { ...config.colours, ...colourOverrides(root) });
 
     const inner = make('div', 'mw-advent-teaser-inner');
     const thumb = make('img', 'mw-advent-teaser-thumb');
     thumb.alt = '';
-    if (config.scene) thumb.src = tenantUrl(slug, config.scene);
+    if (config.scene) thumb.src = rootUrl(config.scene);
     const text = make('div', 'mw-advent-teaser-text');
     const heading = make('h2', 'mw-advent-teaser-heading', words.heading);
     const line = make('p', 'mw-advent-teaser-line', words.line);
     const open = make('a', 'mw-advent-teaser-pill', words.button);
-    open.href = calendarUrl(slug);
+    open.href = calendarUrl(siteName);
     text.append(heading, line, open);
     inner.append(thumb, text);
     root.replaceChildren(inner);
@@ -162,28 +182,26 @@
     if (season !== 'live') return;
     try {
       const day = String(today).padStart(2, '0');
-      const file = await fetchJson(tenantUrl(slug, `day-${day}.json`));
+      const file = await fetchJson(rootUrl(`day-${day}.json`));
       if (!dayFileIsSane(file, today)) return;
-      line.textContent = teaserWords(season, today, file.title, config).line;
-      if (file.art) thumb.src = tenantUrl(slug, `art/${file.art}`);
+      line.textContent = teaserWords(season, today, file.title, siteName, config.dayCount).line;
+      if (file.art) thumb.src = rootUrl(`art/${file.art}`);
     } catch {
       // Without the title the banner simply says "Day N".
     }
   }
 
   async function start(root) {
-    const slug = root.dataset.slug;
-    if (typeof slug !== 'string' || !SLUG_PATTERN.test(slug)) return;
     let config;
     try {
-      config = await fetchJson(tenantUrl(slug, 'config.json'));
+      config = await fetchJson(rootUrl('config.json'));
     } catch {
       return;
     }
     if (!configIsSane(config)) return;
     const parts = londonDateParts(Date.now(), config.timeZone);
     const season = seasonState(parts, config.season);
-    if (season === 'live' || season === 'archive') await render(root, slug, config, season, parts);
+    if (season === 'live' || season === 'archive') await render(root, config, siteNameOverride(root), season, parts);
   }
 
   function ensureStylesheet() {

@@ -1,19 +1,19 @@
-# kington: pictures and scene (tighten only: a picture may use inline styles and nothing else), day files
-# and the public config (not a secret: anyone who knows an address can still fetch one, but kept out of
+# Pictures and scene (tighten only: a picture may use inline styles and nothing else), day files and
+# the public config (not a secret: anyone who knows the address can still fetch one, but kept out of
 # search), and CORS so a church embedding the teaser script on its own site can fetch all of them.
-/kington/art/*
+/art/*
   Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox
   Access-Control-Allow-Origin: *
 
-/kington/scene.svg
+/scene.svg
   Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox
   Access-Control-Allow-Origin: *
 
-/kington/day-*.json
+/day-*.json
   X-Robots-Tag: noindex
   Access-Control-Allow-Origin: *
 
-/kington/config.json
+/config.json
   X-Robots-Tag: noindex
   Access-Control-Allow-Origin: *
 

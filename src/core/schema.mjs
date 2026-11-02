@@ -1,8 +1,8 @@
-// Validators for the two things a church's tenant folder owns: its content (the 25 days, and an optional
-// bonus day) and its theme. Pure functions. Anything wrong throws an Error naming the field (and day) at
-// fault, never quoting a long raw value. Unknown keys are errors, so a typo cannot slip by. Each validator
-// checks a private COPY of what it is given and returns that copy, so the caller cannot change the data
-// after it has been checked.
+// Validators for the two things the shared calendar owns: its content (the 25 days, and an optional bonus
+// day) and its theme. Pure functions. Anything wrong throws an Error naming the field (and day) at fault,
+// never quoting a long raw value. Unknown keys are errors, so a typo cannot slip by. Each validator checks a
+// private COPY of what it is given and returns that copy, so the caller cannot change the data after it has
+// been checked.
 //
 // The rules for ONE day (and all the text rules) live in day.mjs, which has no imports so the browser can
 // run the same checks on every day file it fetches. This file re-exports the parts other code uses.
@@ -12,22 +12,23 @@
 //   entry in the theme; a theme with a bonus but content without one simply shows 25 doors.
 //
 // THEME shape (all keys required except those listed under OPTIONAL):
-//   siteName, translationName   text, up to 80
-//   timeZone                    a name from Intl.supportedValuesOf('timeZone')
-//   season                      { start: {month, day}, end: {month, day}, archiveUntil: {month, day} | null }
-//   colours                     name -> "#rrggbb" (every colour the stylesheet needs, see COLOUR_NAMES)
+//   translationName   text, up to 80
+//   timeZone          a name from Intl.supportedValuesOf('timeZone')
+//   season            { start: {month, day}, end: {month, day}, archiveUntil: {month, day} | null }
+//   colours           name -> "#rrggbb" (every colour the stylesheet needs, see COLOUR_NAMES)
 // plus OPTIONAL keys:
-//   bonus   null, or { on: {month, day}, label } for the 26th door. "on" is the date it opens and must fall
-//           in the archive period (after season.end, up to season.archiveUntil), so the season needs an
-//           archiveUntil. label is the door's short name, up to 30 characters.
-//   scene   null, or the file name (like "scene.svg") of the church's own scene picture in tenants/<slug>/;
-//           without it the shared default hills scene is used.
-//
-// A tenant's page address (advent.mediawright.uk/<slug>/) comes from its FOLDER NAME under tenants/, checked
-// by scripts/build.mjs against the same slug rules used here (RESERVED_SLUGS), not from a field in the theme
-// itself: one source of truth, and no way for a theme to disagree with where it is actually served from.
+//   siteName   text, up to 80, or '' (the default) for no built-in church name — every church embedding the
+//              calendar shares the same content, so there is no one name to bake in. A church that wants its
+//              own name on the page gives it per-embed instead: `?site=` on the calendar page's own address,
+//              or `data-site-name` on the teaser embed (see src/client/advent.js and teaser.js). '' means
+//              the heading reads plainly "Advent calendar" rather than "<name> Advent calendar".
+//   bonus      null, or { on: {month, day}, label } for the 26th door. "on" is the date it opens and must
+//              fall in the archive period (after season.end, up to season.archiveUntil), so the season needs
+//              an archiveUntil. label is the door's short name, up to 30 characters.
+//   scene      null, or the file name (like "scene.svg") of the calendar's own scene picture in content/;
+//              without it the shared default hills scene is used.
 import {
-  DAY_COUNT, BONUS_DAY, artPathIsSafe, checkKeys, checkText, fail, isPlainObject, validateDay,
+  DAY_COUNT, BONUS_DAY, artPathIsSafe, checkKeys, checkText, fail, isPlainObject, siteNameIsSafe, validateDay,
 } from './day.mjs';
 
 export { DAY_COUNT, BONUS_DAY, artPathIsSafe, validateDay };
@@ -36,14 +37,8 @@ export const COLOUR_NAMES = [
   'doorLocked', 'doorEdge', 'paper', 'text', 'textSoft', 'link', 'focus',
 ];
 
-// Folder names a church's tenant may never take: paths this app always serves itself.
-export const RESERVED_SLUGS = Object.freeze([
-  'assets', 'embed', 'api', 'js', 'css', 'img', 'index', '404', 'sitemap', 'robots',
-  '_headers', '_redirects', 'cdn-cgi', 'functions', 'help', 'updates',
-]);
-
-const THEME_OPTIONAL_KEYS = ['bonus', 'scene'];
-const THEME_KEYS = ['siteName', 'timeZone', 'season', 'translationName', 'colours'];
+const THEME_OPTIONAL_KEYS = ['siteName', 'bonus', 'scene'];
+const THEME_KEYS = ['timeZone', 'season', 'translationName', 'colours'];
 const DAYS_IN_MONTH = [31, 29, 31, 30, 31, 30, 31, 31, 30, 31, 30, 31];
 
 function copyOf(value, where) {
@@ -52,12 +47,6 @@ function copyOf(value, where) {
   } catch {
     return fail(where, 'must be plain data (text, numbers, true/false, lists and objects)');
   }
-}
-
-/** True only for a plain church slug: lower-case words and numbers joined by single hyphens, up to 32 characters, not reserved. */
-export function slugIsSafe(slug) {
-  return typeof slug === 'string' && slug.length <= 32 && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug) &&
-    !/^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])$/.test(slug) && !RESERVED_SLUGS.includes(slug);
 }
 
 /** Throws unless the content is exactly 25 well-formed days (and a well-formed bonus day, if any). Returns a checked copy. */
@@ -121,7 +110,8 @@ export function validateTheme(theme) {
   if (!isPlainObject(copy)) fail('theme', 'must be an object');
   checkKeys(copy, THEME_KEYS, THEME_OPTIONAL_KEYS, 'theme');
 
-  checkText(copy.siteName, 'siteName', 'theme', 80, { content: false });
+  if (copy.siteName === undefined) copy.siteName = '';
+  if (!siteNameIsSafe(copy.siteName)) fail('theme', '"siteName" must be text up to 80 characters, or empty for no built-in church name');
   checkText(copy.translationName, 'translationName', 'theme', 80, { content: false });
 
   if (typeof copy.timeZone !== 'string' || !(copy.timeZone === 'UTC' || Intl.supportedValuesOf('timeZone').includes(copy.timeZone))) {

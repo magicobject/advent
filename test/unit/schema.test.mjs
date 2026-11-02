@@ -1,13 +1,14 @@
-// Unit tests for src/core/schema.mjs and the real Kington tenant's content and theme. Carried over and
-// adapted from the kington-parishes repo's own Advent module: the theme no longer carries a slug or the
-// per-site launch flags (previewEnabled, adventEnabled, publicListing, artRequired, goLive) — a church's
-// address comes from its tenants/ folder name (checked by slugIsSafe, see tenant.test.mjs), and a tenant
-// going live is simply its folder being merged and deployed.
+// Unit tests for src/core/schema.mjs and the real shared calendar's content and theme. Carried over and
+// adapted from the kington-parishes repo's own Advent module: the theme no longer carries the per-site launch
+// flags (previewEnabled, adventEnabled, publicListing, artRequired, goLive), and siteName is now optional —
+// there is one shared calendar, not one per church, so there is no one church name to bake in (a church
+// supplies its own name per-embed instead; see src/client/advent.js and teaser.js).
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { validateContent, validateTheme, artPathIsSafe, DAY_COUNT } from '../../src/core/schema.mjs';
-import { content } from '../../tenants/kington/content.mjs';
-import { theme } from '../../tenants/kington/theme.mjs';
+import { siteNameIsSafe } from '../../src/core/day.mjs';
+import { content } from '../../content/content.mjs';
+import { theme } from '../../content/theme.mjs';
 
 const clone = (value) => structuredClone(value);
 const rejects = (mutate, pattern, base = content, validate = validateContent) => {
@@ -17,17 +18,17 @@ const rejects = (mutate, pattern, base = content, validate = validateContent) =>
 };
 const dayOf = (c, n) => c.days.find((d) => d.day === n);
 
-describe('the Kington tenant files', () => {
+describe('the real shared calendar files', () => {
   test('content.mjs is valid and has 25 days (plus the Epiphany bonus)', () => {
     assert.deepEqual(validateContent(content), content);
     assert.equal(content.days.length, DAY_COUNT);
     assert.equal(content.bonus.day, 26);
   });
 
-  test('theme.mjs is valid', () => {
+  test('theme.mjs is valid and carries no built-in church name', () => {
     assert.deepEqual(validateTheme(theme), theme);
     assert.equal(theme.timeZone, 'Europe/London');
-    assert.equal(theme.siteName, 'Kington Parishes');
+    assert.equal(theme.siteName, '');
   });
 
   test('every day has its own picture file named by its number', () => {
@@ -186,12 +187,30 @@ describe('art paths', () => {
   });
 });
 
+// siteNameIsSafe is the one check shared by the build (theme.siteName, usually '') and both client entry
+// points (advent.js's `?site=`, teaser.js's `data-site-name`): see CLAUDE.md's architecture notes.
+describe('siteNameIsSafe: a church\'s own name, wherever it is supplied', () => {
+  test('accepts \'\' (no name given) and plain names up to 80 characters', () => {
+    for (const ok of ['', "St Mary's", 'Kington Parishes', 'Église Saint-Martin', 'a'.repeat(80)]) {
+      assert.equal(siteNameIsSafe(ok), true, ok);
+    }
+  });
+
+  test('rejects anything over 80 characters, markup, addresses, template braces and non-text', () => {
+    for (const bad of [
+      'a'.repeat(81), '<b>Church</b>', 'see http://evil.example', 'x{{y}}', 'tab\there', 'line\nbreak',
+      null, undefined, 5, [], {},
+    ]) {
+      assert.equal(siteNameIsSafe(bad), false, String(bad));
+    }
+  });
+});
+
 describe('validateTheme', () => {
   const bad = (mutate, pattern) => rejects(mutate, pattern, theme, validateTheme);
 
-  test('accepts another church setup with different dates, colours and a different zone', () => {
+  test('accepts a different season, colours and time zone (not that this app runs more than one calendar)', () => {
     const other = clone(theme);
-    other.siteName = 'Another Church';
     other.timeZone = 'Pacific/Auckland';
     other.bonus = null;
     other.season = { start: { month: 12, day: 1 }, end: { month: 12, day: 25 }, archiveUntil: null };
@@ -199,9 +218,20 @@ describe('validateTheme', () => {
     validateTheme(other);
   });
 
-  test('rejects unknown and missing keys', () => {
+  test('rejects unknown keys and a missing required key', () => {
     bad((t) => { t.previewKey = 'abc'; }, /unknown key "previewKey"/);
-    bad((t) => { delete t.siteName; }, /missing key "siteName"/);
+    bad((t) => { delete t.translationName; }, /missing key "translationName"/);
+  });
+
+  test('siteName is optional: absent defaults to \'\', and \'\' is itself valid (no built-in church name)', () => {
+    const { siteName, ...withoutSiteName } = clone(theme);
+    assert.equal(validateTheme(withoutSiteName).siteName, '');
+    const blank = clone(theme);
+    blank.siteName = '';
+    assert.equal(validateTheme(blank).siteName, '');
+    const named = clone(theme);
+    named.siteName = "St Mary's";
+    assert.equal(validateTheme(named).siteName, "St Mary's");
   });
 
   test('rejects bad colours', () => {
@@ -240,7 +270,8 @@ describe('validateTheme', () => {
 
   test('rejects hostile text in names', () => {
     bad((t) => { t.siteName = '<b>Church</b>'; }, /"siteName"/);
-    bad((t) => { t.siteName = ''; }, /"siteName"/);
+    bad((t) => { t.siteName = 'see http://evil.example'; }, /"siteName"/);
+    bad((t) => { t.siteName = 'a'.repeat(81); }, /"siteName"/);
     bad((t) => { t.translationName = 'x{{y}}'; }, /"translationName"/);
     bad((t) => { t.translationName = 'a'.repeat(81); }, /"translationName"/);
   });
