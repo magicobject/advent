@@ -10,8 +10,22 @@
 // number, size-capped, parsed in try/catch and checked with the shared day rules; the preview date is never
 // put into any link, share address or canonical; no outside requests.
 import { seasonState, doorState, msUntilNextMidnight, BONUS_DAY } from './advent-core/date.mjs';
+import { siteNameIsSafe } from './advent-core/day.mjs';
 import { effectiveDate, formatPreviewNotice } from './advent-core/preview.mjs';
 import { FRIENDLY_ERROR, artUrl, calendarUrl, dateLabel, doorName, doorNumberText, doorSub, fetchDayFile, neighbours, parseDayHash, readConfig, shareUrl, statusText, todayDoor } from './advent-core/logic.mjs';
+
+// There is one shared calendar, used by every church that embeds it: it carries no built-in name (see
+// content/theme.mjs). A church that wants its own name on the page passes it as `?site=` on the calendar
+// page's own address (the same address the teaser embed's "Open today's door" button links to, with the
+// church's name already carried forward — see teaser.js). siteNameIsSafe is the one check both this page
+// and the build (src/core/schema.mjs) run, so a hostile value can never reach the page as anything but
+// dropped. An invalid or missing value simply leaves the calendar unnamed, the same as no override at all.
+function siteNameFromQuery(search) {
+  const value = new URLSearchParams(search).get('site');
+  return typeof value === 'string' && siteNameIsSafe(value) && value !== '' ? value : null;
+}
+
+const headingText = (siteName) => (siteName ? `${siteName} Advent calendar` : 'Advent calendar');
 
 function make(tag, className, text) {
   const node = document.createElement(tag);
@@ -34,10 +48,10 @@ const part = (root, name) => root.querySelector(`[data-advent-${name}]`);
 
 // The ONE heading of the calendar section lives in the calm part (as served) and moves into the live part while the
 // calendar shows, so there is exactly one visible h2 (and one search result) in every state.
-function showCalm(root, text, headingText) {
-  const heading = part(root, 'heading');
-  heading.textContent = headingText;
-  part(root, 'calm').prepend(heading);
+function showCalm(root, text, heading) {
+  const headingEl = part(root, 'heading');
+  headingEl.textContent = heading;
+  part(root, 'calm').prepend(headingEl);
   // The served sentence is date-neutral (no JavaScript); the script says what is true today.
   if (text) part(root, 'calm-text').textContent = text;
   part(root, 'live').hidden = true;
@@ -77,7 +91,7 @@ class Calendar {
     this.hasBonus = Boolean(config.bonus);
     this.days = Array.from({ length: config.dayCount + (this.hasBonus ? 1 : 0) }, (_, index) => index + 1);
     this.heading = part(root, 'heading');
-    this.defaultHeading = `${config.siteName} Advent calendar`;
+    this.defaultHeading = headingText(config.siteName);
     this.parts = null;
     this.season = null;
     this.states = new Map();
@@ -248,7 +262,7 @@ class Calendar {
     this.announcer.setAttribute('role', 'status');
 
     // Only shown when printing (the print stylesheet): the site name above the day.
-    const printSite = make('p', 'advent-print-site', `${this.config.siteName} Advent calendar`);
+    const printSite = make('p', 'advent-print-site', headingText(this.config.siteName));
 
     panel.append(printSite, top, this.art, this.eyebrow, this.title, this.message, this.body, this.announcer);
     dialog.append(panel);
@@ -552,7 +566,7 @@ class CalendarPage {
       }
       this.calendar.apply(state.parts, state.season);
     } else {
-      showCalm(this.root, this.config.opensText, `${this.config.siteName} Advent calendar`);
+      showCalm(this.root, this.config.opensText, headingText(this.config.siteName));
     }
   }
 
@@ -580,7 +594,14 @@ const root = document.querySelector('[data-advent]');
 if (root) {
   try {
     const config = readConfig(root.dataset);
-    if (config) new CalendarPage(root, config).start();
+    if (config) {
+      const override = siteNameFromQuery(location.search);
+      if (override) {
+        config.siteName = override;
+        document.title = `Advent calendar — ${override}`;
+      }
+      new CalendarPage(root, config).start();
+    }
   } catch {
     // Anything unexpected leaves the calm message the page already shows.
   }

@@ -2,7 +2,7 @@
 // the way the calendar page does (see its own comment for why) — it keeps a small inlined copy of the season
 // logic instead. This test keeps that copy honest: it is extracted from the source text and checked against
 // src/core/date.mjs's seasonState for a whole year, so the two can never quietly drift apart.
-import { test } from 'node:test';
+import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { seasonState as realSeasonState, londonDateParts as realLondonDateParts } from '../../src/core/date.mjs';
@@ -65,4 +65,62 @@ test('the inlined season logic in teaser.js agrees with src/core/date.mjs for ev
 
 test('teaser.js never imports anything (it must stand alone on a foreign page)', () => {
   assert.doesNotMatch(SOURCE, /\bimport\b/);
+});
+
+// A minimal stand-in for the one container element teaser.js reads: `dataset` for siteNameOverride,
+// `getAttribute` for colourOverrides (real element attributes are always strings or absent, never undefined).
+function fakeRoot(attributes) {
+  return {
+    dataset: Object.fromEntries(Object.entries(attributes).filter(([key]) => key !== 'style').map(([key, value]) => [toCamel(key), value])),
+    getAttribute: (name) => (name in attributes ? attributes[name] : null),
+  };
+}
+const toCamel = (name) => name.replace(/^data-/, '').replace(/-(\w)/g, (_, c) => c.toUpperCase());
+
+function loadEmbedOverrides(source, origin) {
+  const consts = ['NAME_ALLOWED', 'COLOUR_NAMES', 'HEX_COLOUR'].map((name) => extractDeclaration(source, name));
+  const fns = ['siteNameOverride', 'colourOverrides', 'calendarUrl'].map((name) => extractDeclaration(source, name));
+  // eslint-disable-next-line no-new-func
+  const sandbox = new Function('origin', 'encodeURIComponent', `
+    ${consts.join('\n')}
+    ${fns.join('\n')}
+    return { siteNameOverride, colourOverrides, calendarUrl };
+  `);
+  return sandbox(origin, encodeURIComponent);
+}
+
+const { siteNameOverride, colourOverrides, calendarUrl } = loadEmbedOverrides(SOURCE, 'https://advent.mediawright.uk');
+
+describe('siteNameOverride: a church\'s own name, from data-site-name on the embed\'s container', () => {
+  test('a plain name is accepted', () => {
+    assert.equal(siteNameOverride(fakeRoot({ 'data-site-name': "St Mary's" })), "St Mary's");
+  });
+
+  test('missing, empty or hostile text gives \'\' (the shared, unnamed banner)', () => {
+    for (const value of [undefined, '', '<b>x</b>', 'see http://evil.example', 'a'.repeat(81)]) {
+      assert.equal(siteNameOverride(fakeRoot(value === undefined ? {} : { 'data-site-name': value })), '', String(value));
+    }
+  });
+});
+
+describe('colourOverrides: a church\'s own colours, from data-* attributes on the embed\'s container', () => {
+  test('accepts a plain #rrggbb per known colour name, kebab-cased', () => {
+    const root = fakeRoot({ 'data-night': '#102030', 'data-accent-ink': '#2a2000' });
+    assert.deepEqual(colourOverrides(root), { night: '#102030', accentInk: '#2a2000' });
+  });
+
+  test('drops anything that is not a plain hex colour, and anything not on the known list', () => {
+    const root = fakeRoot({ 'data-night': 'red', 'data-accent': '#12345g', 'data-unknown': '#ffffff' });
+    assert.deepEqual(colourOverrides(root), {});
+  });
+});
+
+describe('calendarUrl: the link the banner\'s button carries to the full calendar', () => {
+  test('with no name, the bare origin', () => {
+    assert.equal(calendarUrl(''), 'https://advent.mediawright.uk/');
+  });
+
+  test('with a name, ?site= carries it forward, URL-encoded', () => {
+    assert.equal(calendarUrl("St Mary's"), "https://advent.mediawright.uk/?site=St%20Mary's");
+  });
 });

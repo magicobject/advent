@@ -73,6 +73,22 @@ export function artPathIsSafe(path) {
     !/^(?:con|nul|aux|prn|com[1-9]|lpt[1-9])\.svg$/.test(path);
 }
 
+/**
+ * True for a safe church name: '' (no name given), or text up to 80 characters passing the same deny rules
+ * and NAME_ALLOWED positive list as theme.siteName/translationName (see checkText). The one check both the
+ * build (the shared theme's own default name) and the browser (a `?site=` query value, a `data-site-name`
+ * embed attribute) run, so a hostile value can never reach the page as anything but rejected.
+ */
+export function siteNameIsSafe(value) {
+  if (typeof value !== 'string' || value.length > 80) return false;
+  if (value === '') return true;
+  const normalised = value.normalize('NFKC');
+  if (BAD_CHARACTER.test(value) || BAD_CHARACTER.test(normalised)) return false;
+  if (normalised.includes('{{') || normalised.includes('}}')) return false;
+  if (FORMULA_START.test(value)) return false;
+  return NAME_ALLOWED.test(value);
+}
+
 export function fail(where, message) {
   throw new Error(`${where}: ${message}`);
 }

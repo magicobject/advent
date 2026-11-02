@@ -1,8 +1,10 @@
 // Unit tests for src/core/logic.mjs and day.mjs: the pure pieces the calendar page script is built from
 // (settings, addresses, share links, labels, day-file checking). No browser needed. Carried over and adapted
-// from the kington-parishes repo's own Advent module: addresses are now relative to the page (one church per
-// path) instead of hardcoded to /advent/, and the per-site launch-flag settings (goLive, previewEnabled,
-// enabled, slug) are gone — a tenant going live is simply its folder being merged and deployed.
+// from the kington-parishes repo's own Advent module: addresses are now relative to the page (there is one
+// shared calendar, served from one address) instead of hardcoded to /advent/, and the per-site launch-flag
+// settings (goLive, previewEnabled, enabled) are gone — this calendar going live is simply content/ being
+// merged and deployed. `siteName` in the test fixtures below is a stand-in for a church's `?site=`/
+// `data-site-name` override (see advent.js and teaser.js); the real content/theme.mjs carries none.
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import {
@@ -11,7 +13,7 @@ import {
 } from '../../src/core/logic.mjs';
 import { validateDayPayload, BONUS_DAY as DAY_BONUS_DAY, DAY_COUNT } from '../../src/core/day.mjs';
 import { BONUS_DAY as DATE_BONUS_DAY, londonDateParts } from '../../src/core/date.mjs';
-import { content } from '../../tenants/kington/content.mjs';
+import { content } from '../../content/content.mjs';
 
 const DATA = {
   startMonth: '12', startDay: '1', endMonth: '12', endDay: '25', archiveMonth: '1', archiveDay: '6',

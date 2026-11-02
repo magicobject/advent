@@ -3,14 +3,49 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Advent calendars for churches</title>
+<title>Advent calendar</title>
+<meta name="description" content="Open a new door each day from 1 to 25 December to read the Christmas story, from Genesis to Bethlehem.">
 <meta name="robots" content="noindex, nofollow">
-<style>body { font: 16px/1.5 system-ui, sans-serif; max-width: 40rem; margin: 3rem auto; padding: 0 1rem; color: #1c2420; }</style>
+<style>:root {
+  --advent-night: #14202b;
+  --advent-sky2: #2e3c48;
+  --advent-ridge: #0d161e;
+  --advent-cream: #f2e6c4;
+  --advent-accent: #e8c27a;
+  --advent-accent-ink: #1f1a0b;
+  --advent-door: #22323f;
+  --advent-door-locked: #18232d;
+  --advent-door-edge: #a8813c;
+  --advent-paper: #f8f5ee;
+  --advent-text: #262521;
+  --advent-text-soft: #4a473f;
+  --advent-link: #7c5e28;
+  --advent-focus: #fff3c8;
+}
+body { margin: 0; background: var(--advent-night); font: 16px/1.5 system-ui, sans-serif; }
+main { max-width: 760px; margin: 0 auto; padding: 1.5rem 1rem 3rem; }
+</style>
+<link rel="stylesheet" href="/assets/advent.css">
 </head>
 <body>
-<h1>Advent calendars for churches</h1>
-<p>This is the MediaWright Advent calendar platform. Each church's calendar is served at its own address and is
-meant to be embedded on that church's own website, not browsed from here.</p>
-<p>1 church is currently built.</p>
+<main>
+<section class="advent" data-advent="true" data-time-zone="Europe/London" data-site-name="" data-start-month="12" data-start-day="1" data-end-month="12" data-end-day="25" data-archive-month="1" data-archive-day="6" data-day-count="25" data-bonus-month="1" data-bonus-day="6" data-bonus-label="Epiphany" data-scene="scene.svg" data-month-name="December" data-opens-text="The Advent calendar opens on 1 December.">
+  <div class="advent-notice" data-advent-notice role="status" hidden>
+    <p data-advent-notice-text></p>
+  </div>
+  <div class="advent-calm" data-advent-calm>
+    <h1 data-advent-heading>Advent calendar</h1>
+    <p data-advent-calm-text>The Advent calendar needs JavaScript to open its doors. It runs from 1 to 25 December.</p>
+  </div>
+  <div class="advent-live" data-advent-live hidden>
+    <p class="advent-status" data-advent-status></p>
+    <p class="advent-primary"><button type="button" class="advent-pill" data-advent-primary hidden>Open today&#39;s door</button></p>
+    <p class="advent-start" data-advent-start hidden><button type="button" class="advent-pill advent-pill-quiet">Start with Day 1</button></p>
+    <ul class="advent-doors" data-advent-doors></ul>
+    <div class="advent-scene" data-advent-scene aria-hidden="true"></div>
+  </div>
+</section>
+</main>
+<script type="module" src="/assets/advent.js"></script>
 </body>
 </html>

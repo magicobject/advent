@@ -1,7 +1,7 @@
 # Advent — repo notes
 
-An embeddable Advent calendar platform for church websites: see [README.md](README.md) for what this is and
-how it's built, [docs/adding-a-church.md](docs/adding-a-church.md) for onboarding a church, and
+An embeddable Advent calendar for church websites: see [README.md](README.md) for what this is and how it's
+built, [docs/editing-content.md](docs/editing-content.md) for changing the shared calendar's content, and
 [docs/embedding.md](docs/embedding.md) for the church-facing embed guide. The global `~/.claude/CLAUDE.md`
 ("Standing practices") is binding here except where this file is more specific.
 
@@ -14,10 +14,10 @@ how it's built, [docs/adding-a-church.md](docs/adding-a-church.md) for onboardin
   `CHANGELOG.md` instead, with build tags applied by hand (`build-<date>.<NNN>`, matching the convention).
   Bringing over the full pipeline from `MrWrightsRules` is a reasonable follow-up once there's enough change
   volume to justify it — raise it with Greg rather than building it unasked.
-- **No `/help` page on the live site yet.** `docs/embedding.md` and `docs/adding-a-church.md` are the
+- **No `/help` page on the live site yet.** `docs/embedding.md` and `docs/editing-content.md` are the
   plain-English guides for now (the former is for a church's webmaster, who is exactly the "non-technical
   person" the standing practice has in mind); a hosted `/help` page is a natural follow-up once the app has
-  more than one tenant-facing page to explain.
+  more than one page to explain.
 - **No browser/E2e test suite yet** (no Playwright): `test/unit/` (`node --test`) covers the date and season
   logic, content and theme validation, the SVG safety/draw-cost lint (including the full attack-pattern suite
   carried over from the original module's security review), contrast, and a build smoke test. Before this app
@@ -27,16 +27,20 @@ how it's built, [docs/adding-a-church.md](docs/adding-a-church.md) for onboardin
 
 ## Architecture notes (not duplicated from README.md)
 
-- **Multi-tenant, not multi-site.** One Worker, one deploy, many churches — see README.md's "How it works".
-  Adding a church is a data change (`tenants/<slug>/`), never a code change; `src/core/schema.mjs`'s
-  `slugIsSafe` and `RESERVED_SLUGS` are the only things standing between a tenant folder name and a live page
-  address, so a new reserved route (anything this app serves itself outside `tenants/`) must be added there.
+- **One shared calendar, not one per church.** Originally built multi-tenant (a `tenants/<slug>/` folder per
+  church, each served at its own `/slug/` address); Greg asked to drop the slug concept entirely once the
+  first two tenants turned out to want identical content. There is now exactly one calendar
+  (`content/theme.mjs` + `content.mjs`), served at the root. A church's identity (name, colours) is supplied
+  per-embed instead of per-tenant: `?site=` on the calendar page's own address (read and validated in
+  `src/client/advent.js`), or `data-site-name`/`data-night`/`data-accent`/etc. on the teaser embed (read and
+  validated in `teaser.js`). Both use `src/core/day.mjs`'s `siteNameIsSafe`, the one check shared between the
+  build (`content/theme.mjs`'s own, normally-empty `siteName`) and both client entry points.
 - **Launch flags were deliberately dropped.** The original kington-parishes module had `goLive`,
   `artRequired`, `publicListing` and a whole pre-launch rehearsal/guard-test system, because that module was
   compiled into one specific site's build and needed a safety net against accidentally revealing an
-  unfinished calendar on a live site that already had other content. Here, a tenant simply isn't added to
-  `tenants/` (or deployed) until it's ready — "merged to `main` and deployed" already is the launch step, so
-  the extra machinery would be redundant complexity.
+  unfinished calendar on a live site that already had other content. Here, a change to `content/` simply
+  isn't merged until it's ready — "merged to `main` and deployed" already is the launch step, so the extra
+  machinery would be redundant complexity.
 - **Day files are not server-side date-gated.** Like the original module, every day's JSON is always
   fetchable (not secret, just kept out of search via `X-Robots-Tag: noindex`); the client-side date logic is
   what keeps a future door's content from showing in the UI. Now that this app actually controls its own
@@ -44,11 +48,14 @@ how it's built, [docs/adding-a-church.md](docs/adding-a-church.md) for onboardin
   the "don't let a curious visitor peek ahead by guessing the file name" property turns out to matter more
   than it did for the original — a possible future hardening pass, not something to add unasked.
 - **The cross-origin teaser (`src/client/teaser.js`) duplicates a small slice of `src/core/date.mjs`'s season
-  logic**, because it has to run standalone on a church's own foreign site with no bundler and no module
-  imports available to it. `test/unit/teaser.test.mjs` extracts the inlined functions straight from the
-  shipped source and checks them against the real `date.mjs` for a whole year, so the two can't quietly drift
-  apart — if you change the season rules in `date.mjs`, update the matching logic in `teaser.js` too and
-  rerun that test.
+  logic and `day.mjs`'s name-safety rule**, because it has to run standalone on a church's own foreign site
+  with no bundler and no module imports available to it (`test/unit/teaser.test.mjs` asserts it imports
+  nothing). `teaser.test.mjs` extracts the inlined date functions straight from the shipped source and checks
+  them against the real `date.mjs` for a whole year, so the two can't quietly drift apart — if you change the
+  season rules in `date.mjs`, update the matching logic in `teaser.js` too and rerun that test. The name-safety
+  copy (`NAME_ALLOWED` in `teaser.js`) is simpler on purpose (no address/formula-injection checks, since the
+  value is only ever set via `textContent` or URL-encoded into a link, never interpreted): keep it a
+  character-allowlist subset of `day.mjs`'s `siteNameIsSafe`, never looser.
 
 ## Commands
 
