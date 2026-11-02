@@ -1,0 +1,10 @@
+name = "advent"
+compatibility_date = "2026-11-01"
+
+# A pure static-assets Worker: every church's calendar page, day files and pictures, the shared calendar
+# script/stylesheet and the cross-origin embed script are all plain files in public/ (built by `npm run
+# build` from tenants/ and src/ — see scripts/build.mjs). Nothing here runs server-side code, so there is no
+# `main` entry point: Cloudflare serves public/ directly, honouring public/_headers for caching, CSP and CORS.
+[assets]
+directory = "./public"
+not_found_handling = "404-page"
