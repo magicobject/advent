@@ -320,10 +320,18 @@ describe('fetchDayFile: one place that fetches, checks and caps a day file', () 
     fn.calls = calls;
     return fn;
   };
+  // fetchDayFile creates its AbortSignal.timeout() BEFORE it does anything else (even a day number bad
+  // enough to reject before a request is ever attempted still starts one): with the real 10-second default
+  // that is a real, uncancellable native timer per call, and every test below makes several calls. Left at
+  // the default, those timers dangle for a real 10 seconds past this file's tests finishing - which was
+  // narrowly enough, under CI's own load, to get unrelated tests elsewhere in the same run torn down
+  // mid-run ("cancelledByParent") rather than completing cleanly. A short override removes the dangling
+  // timers entirely; DAY_FETCH_TIMEOUT_MS itself is still asserted directly, in the describe block below.
+  const SHORT_TIMEOUT = { timeoutMs: 1000 };
 
   test('asks for exactly the day file, with no cookies, and returns the checked file', async () => {
     const fn = fetchWith(reply(goodText));
-    const file = await fetchDayFile(7, fn);
+    const file = await fetchDayFile(7, fn, SHORT_TIMEOUT);
     assert.equal(file.day, 7);
     assert.equal(fn.calls.length, 1);
     assert.equal(fn.calls[0].url, 'day-07.json');
@@ -331,12 +339,12 @@ describe('fetchDayFile: one place that fetches, checks and caps a day file', () 
   });
 
   test('accepts a content type with a charset', async () => {
-    assert.equal((await fetchDayFile(7, fetchWith(reply(goodText, { type: 'application/json; charset=utf-8' })))).day, 7);
+    assert.equal((await fetchDayFile(7, fetchWith(reply(goodText, { type: 'application/json; charset=utf-8' })), SHORT_TIMEOUT)).day, 7);
   });
 
   test('never makes a request for a day that is not a whole number 1 to 26', async () => {
     const fn = fetchWith(reply(goodText));
-    for (const bad of [0, 27, '7', 1.5, null, '../x']) await assert.rejects(() => fetchDayFile(bad, fn), RangeError, String(bad));
+    for (const bad of [0, 27, '7', 1.5, null, '../x']) await assert.rejects(() => fetchDayFile(bad, fn, SHORT_TIMEOUT), RangeError, String(bad));
     assert.equal(fn.calls.length, 0);
   });
 
@@ -355,7 +363,7 @@ describe('fetchDayFile: one place that fetches, checks and caps a day file', () 
       'nothing': null,
     };
     for (const [name, response] of Object.entries(cases)) {
-      await assert.rejects(() => fetchDayFile(7, fetchWith(response)), Error, name);
+      await assert.rejects(() => fetchDayFile(7, fetchWith(response), SHORT_TIMEOUT), Error, name);
     }
   });
 });
