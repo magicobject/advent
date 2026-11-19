@@ -3,6 +3,7 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -37,6 +38,25 @@ describe('the real content/ folder', () => {
     const text = readFileSync(join(ROOT, 'public', '_headers'), 'utf8');
     for (const line of text.split('\n')) {
       if (line.startsWith('/')) assert.ok((line.match(/\*/g) ?? []).length <= 1, line);
+    }
+  });
+
+  test('_headers sets site-wide security headers, and the CSP hashes cover every inline <style>', () => {
+    const text = readFileSync(join(ROOT, 'public', '_headers'), 'utf8');
+    const block = text.split('\n\n').find((part) => part.includes('\n/*\n'));
+    assert.ok(block, 'a catch-all rule exists');
+    for (const name of ['Content-Security-Policy', 'Strict-Transport-Security', 'X-Content-Type-Options', 'Referrer-Policy', 'Permissions-Policy']) {
+      assert.match(block, new RegExp(`^  ${name}: `, 'm'), name);
+    }
+    const csp = block.match(/^  Content-Security-Policy: (.*)$/m)[1];
+    assert.doesNotMatch(csp, /unsafe-inline|unsafe-eval/);
+    assert.doesNotMatch(csp, /frame-ancestors/, 'churches may iframe the calendar');
+    for (const page of ['index.html', '404.html']) {
+      const html = readFileSync(join(ROOT, 'public', page), 'utf8');
+      for (const match of html.matchAll(/<style>([\s\S]*?)<\/style>/g)) {
+        const hash = `'sha256-${createHash('sha256').update(match[1]).digest('base64')}'`;
+        assert.ok(csp.includes(hash), `${page}: inline style hash is in the CSP`);
+      }
     }
   });
 

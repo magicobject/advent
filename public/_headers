@@ -1,3 +1,12 @@
+# Every address: security headers. No frame-ancestors on purpose: churches may show the calendar in an
+# <iframe> (docs/embedding.md). Where a rule below sets its own Content-Security-Policy, both apply.
+/*
+  Content-Security-Policy: default-src 'none'; script-src 'self'; style-src 'self' 'sha256-+xmzEw1m+ykXFHQd6iC/wpVXwFepYd2sE/1Q7dhf338=' 'sha256-rGnO1JB9kH6kImKNn6edsaJTbaBV7DD48/OGuSTum/c='; img-src 'self' data:; connect-src 'self'; base-uri 'none'; form-action 'none'; object-src 'none'
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  X-Content-Type-Options: nosniff
+  Referrer-Policy: strict-origin-when-cross-origin
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()
+
 # Pictures and scene (tighten only: a picture may use inline styles and nothing else), day files and
 # the public config (not a secret: anyone who knows the address can still fetch one, but kept out of
 # search), and CORS so a church embedding the teaser script on its own site can fetch all of them.
