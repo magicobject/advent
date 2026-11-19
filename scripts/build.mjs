@@ -17,6 +17,7 @@
 // It also writes the browser code every page uses (assets/advent.js, advent.css, the four pure core modules,
 // embed/teaser.js, embed/teaser.css), the 404 page, and public/_headers.
 import { existsSync, lstatSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { DAY_COUNT, COLOUR_NAMES, validateContent, validateTheme } from '../src/core/schema.mjs';
@@ -275,8 +276,33 @@ function notFoundPage() {
 }
 
 // Cloudflare's _headers format allows only one wildcard per rule.
-function headersFile(sharedFiles) {
+// Content-Security-Policy hash source for every inline <style> block in the given pages, so the policy
+// needs no 'unsafe-inline' for styles. The pages are built here, so the hashes can't drift.
+function styleHashes(pages) {
+  const hashes = new Set();
+  for (const html of pages) {
+    for (const match of html.matchAll(/<style>([\s\S]*?)<\/style>/g)) {
+      hashes.add(`'sha256-${createHash('sha256').update(match[1]).digest('base64')}'`);
+    }
+  }
+  return [...hashes].sort();
+}
+
+function headersFile(sharedFiles, pages) {
   const lines = [];
+  const pagePolicy = [
+    "default-src 'none'", "script-src 'self'", `style-src 'self' ${styleHashes(pages).join(' ')}`,
+    "img-src 'self' data:", "connect-src 'self'", "base-uri 'none'", "form-action 'none'", "object-src 'none'",
+  ].join('; ');
+  lines.push('# Every address: security headers. No frame-ancestors on purpose: churches may show the calendar in an');
+  lines.push('# <iframe> (docs/embedding.md). Where a rule below sets its own Content-Security-Policy, both apply.');
+  lines.push('/*');
+  lines.push(`  Content-Security-Policy: ${pagePolicy}`);
+  lines.push('  Strict-Transport-Security: max-age=31536000; includeSubDomains');
+  lines.push('  X-Content-Type-Options: nosniff');
+  lines.push('  Referrer-Policy: strict-origin-when-cross-origin');
+  lines.push('  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=()');
+  lines.push('');
   const picturePolicy = "Content-Security-Policy: default-src 'none'; style-src 'unsafe-inline'; sandbox";
   lines.push('# Pictures and scene (tighten only: a picture may use inline styles and nothing else), day files and');
   lines.push('# the public config (not a secret: anyone who knows the address can still fetch one, but kept out of');
@@ -338,7 +364,8 @@ async function main() {
   writeIfChanged(join(PUBLIC_DIR, 'scene.svg'), scene.text);
 
   const sceneFileName = 'scene.svg';
-  writeIfChanged(join(PUBLIC_DIR, 'index.html'), renderPage({ ...theme, sceneFileName }, hasBonus));
+  const indexHtml = renderPage({ ...theme, sceneFileName }, hasBonus);
+  writeIfChanged(join(PUBLIC_DIR, 'index.html'), indexHtml);
 
   const config = {
     siteName: theme.siteName,
@@ -352,7 +379,7 @@ async function main() {
   writeIfChanged(join(PUBLIC_DIR, 'config.json'), `${JSON.stringify(config, null, 2)}\n`);
 
   writeIfChanged(join(PUBLIC_DIR, '404.html'), notFoundPage());
-  writeIfChanged(join(PUBLIC_DIR, '_headers'), headersFile(sharedFiles));
+  writeIfChanged(join(PUBLIC_DIR, '_headers'), headersFile(sharedFiles, [indexHtml, notFoundPage()]));
   console.log(`Built the calendar: ${DAY_COUNT}${hasBonus ? ' + 1 bonus' : ''} days, ${presentArt.size} pictures.`);
 }
 
